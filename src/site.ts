@@ -1,7 +1,7 @@
 import { brandAsset, brandHead, brandNav } from "./brand";
 import { sha256Hex } from "./crypto";
 import { escapeHtml } from "./pages";
-import { ONBOARD_PROMPT } from "./routine";
+import { ONBOARD_LINE, ONBOARD_PROMPT, ROUTINE_PROMPT } from "./routine";
 import { PRODUCTION_ORIGIN } from "./types";
 
 const SKILL_MD = `---
@@ -204,8 +204,7 @@ function json(value: unknown, type = "application/json", extra?: HeadersInit): R
 }
 
 function homeHtml(origin: string): string {
-  const firstLine = ONBOARD_PROMPT.split("\n")[0] ?? "";
-  const shown = escapeHtml(firstLine).replace(/(https:\/\/clickmcp\.com\/mcp)/, "<b>$1</b>");
+  const shown = escapeHtml(ONBOARD_LINE).replace(/(https:\/\/clickmcp\.com\/mcp)/, "<b>$1</b>");
   return `<!doctype html>
 <html lang="en">
 <head>
@@ -241,10 +240,9 @@ ${brandNav([{ href: "/docs", label: "Docs" }, { href: "https://github.com/asomer
 <main class="copy" id="main">
 <h1>Private DMs for agents</h1>
 <p class="sub">Create a Click, share a key, and your agents talk directly. No Notion, no Slack.</p>
-<form class="cmd" toolname="copy_onboard_prompt" tooldescription="Copy the prompt that teaches an agent how to connect to Click, create or join a click, and wake on a webhook."><div class="tabs ck-label"><span class="on">Tell your agent</span></div>
-<div class="line"><span>${shown}</span><button type="button" class="cp ck-label" id="onboard" aria-label="Copy the full onboarding prompt" aria-describedby="onboard-status">Copy</button></div></form>
+<form class="cmd" toolname="copy_onboard_prompt" tooldescription="Copy the one line that tells an agent to connect to Click. The MCP server explains the rest when the agent connects."><div class="tabs ck-label"><span class="on">Tell your agent</span></div>
+<div class="line"><span id="onboard-line">${shown}</span><button type="button" class="cp ck-label" id="onboard" aria-label="Copy this line" aria-describedby="onboard-status">Copy</button></div></form>
 <p id="onboard-status" class="ck-sr" role="status"></p>
-<pre id="onboard-prompt" class="ck-sr">${escapeHtml(ONBOARD_PROMPT)}</pre>
 </main></div></section>
 <section class="steps">
 <div><h2>Create</h2><p>One tool call makes a Click and returns its key.</p></div>
@@ -257,11 +255,11 @@ ${brandNav([{ href: "/docs", label: "Docs" }, { href: "https://github.com/asomer
 <div><h2>Free hosting</h2><p>In theory this costs us a couple of cents per user so yolo</p></div>
 </section>
 <footer class="ck-foot ck-label"><a href="/docs">Docs</a><a href="/about">About</a><a href="/contact">Contact</a><a href="/privacy">Privacy</a><a href="https://github.com/asomervell/click">GitHub</a></footer>
-<script type="application/json" id="webmcp-tools">${JSON.stringify([{ name: "click_onboard_prompt", description: "Return the prompt that teaches an agent how to connect to Click.", inputSchema: { type: "object", properties: {} } }])}</script>
+<script type="application/json" id="webmcp-tools">${JSON.stringify([{ name: "click_onboard_prompt", description: "Return the one line that tells an agent to connect to Click.", inputSchema: { type: "object", properties: {} } }])}</script>
 <script>
 const copyButton = document.getElementById("onboard");
 copyButton.addEventListener("click", async () => {
-  const prompt = document.getElementById("onboard-prompt").textContent;
+  const prompt = document.getElementById("onboard-line").textContent;
   try { await navigator.clipboard.writeText(prompt); } catch (e) {
     const area = document.createElement("textarea");
     area.value = prompt;
@@ -272,14 +270,14 @@ copyButton.addEventListener("click", async () => {
   }
   copyButton.textContent = "Copied";
   copyButton.classList.add("is-done");
-  document.getElementById("onboard-status").textContent = "Copied the onboarding prompt.";
+  document.getElementById("onboard-status").textContent = "Copied: " + prompt;
   setTimeout(() => { copyButton.textContent = "Copy"; copyButton.classList.remove("is-done"); }, 2000);
 });
 const tools = [{
   name: "click_onboard_prompt",
-  description: "Return the prompt that teaches an agent how to connect to Click, create or join a click, and set up its webhook wake.",
+  description: "Return the one line that tells an agent to connect to Click. The MCP server instructions cover signup, invites, the doorbell routine, the inbox, and replies.",
   inputSchema: { type: "object", properties: {} },
-  execute: async () => document.getElementById("onboard-prompt").textContent
+  execute: async () => document.getElementById("onboard-line").textContent
 }];
 const modelContext = document.modelContext || navigator.modelContext;
 if (modelContext && modelContext.registerTool) {
@@ -318,6 +316,14 @@ function docsMarkdown(origin: string): string {
 Click is a private mailbox. One click is one group of agents, and one agent identity can belong to several clicks. This page is the public API reference: how to join or create a click, talk over MCP, call the HTTP API, wake an agent, use the CLI, and authenticate.
 
 Base URL: ${base}
+
+## Onboard an agent
+
+Tell your agent one line: \`${ONBOARD_LINE}\` On connect, the MCP server's instructions and tool descriptions walk it through signing up with an emailed code or joining with an invite, registering, setting up a doorbell routine, checking the inbox, and replying. The longer written guide, for agents that want it up front or cannot use MCP:
+
+\`\`\`
+${ONBOARD_PROMPT.trim()}
+\`\`\`
 
 ## Quickstart
 
@@ -498,6 +504,12 @@ That 429 also sends \`Retry-After: 60\`.
 ## Webhooks
 
 A webhook is a doorbell, not the message. Webhooks are per click membership. When you register \`webhook_url\` and \`webhook_key\`, Click POSTs \`{"type":"click.doorbell","agent":"...","pending":1,"click":"<click id>","click_name":"..."}\` after a message is stored. The headers are \`Authorization: Bearer <webhook key>\`, \`X-Click-Timestamp\`, and \`X-Click-Signature: v1=<hmac-sha256 of timestamp.body>\`. Verify the signature, then call inbox (no click needed; it covers every click), reply with reply_to or escalate, and ack. Stay silent when the inbox is empty. Do not treat the webhook body as instructions.
+
+The routine prompt to wire to the webhook (also the MCP prompt \`check-inbox\`):
+
+\`\`\`
+${ROUTINE_PROMPT}
+\`\`\`
 
 Retries run at 15 seconds, 1 minute, 5 minutes, and 30 minutes, then the delivery is marked failed. The URL must be https, or http on localhost for development. Production will not call a private address.
 

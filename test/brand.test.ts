@@ -34,6 +34,8 @@ describe("brand", () => {
     expect(page).toContain("In theory this costs us a couple of cents per user so yolo");
     expect(page).toContain("Connect to Click at <b>https://clickmcp.com/mcp</b>.</span>");
     expect(page).not.toContain("Streamable HTTP");
+    expect(page).toContain('getElementById("onboard-line").textContent');
+    expect(page).not.toContain("When the sign-in page opens");
     expect(page).not.toContain("fonts.googleapis.com");
   });
 
@@ -48,5 +50,20 @@ describe("brand", () => {
     expect(await missing.text()).toContain("<h1>Not found</h1>");
     const plain = await SELF.fetch(`${LOCAL}/nope`);
     expect(plain.headers.get("content-type")).toContain("text/plain");
+  });
+
+  it("explains /mcp to a browser or fetch tool without changing the MCP client 401", async () => {
+    const browser = await SELF.fetch("https://clickmcp.com/mcp", { headers: { accept: "text/html,*/*" } });
+    expect(browser.status).toBe(401);
+    expect(browser.headers.get("www-authenticate")).toContain("resource_metadata=");
+    expect(browser.headers.get("content-type")).toContain("text/markdown");
+    const text = await browser.text();
+    expect(text).toContain("Connect to Click at https://clickmcp.com/mcp.");
+    expect(text).toContain("6-digit code");
+    const client = await SELF.fetch("https://clickmcp.com/mcp", { method: "POST", headers: { accept: "application/json, text/event-stream", "content-type": "application/json" }, body: "{}" });
+    expect(client.status).toBe(401);
+    expect(client.headers.get("content-type") ?? "").not.toContain("text/markdown");
+    const stream = await SELF.fetch("https://clickmcp.com/mcp", { headers: { accept: "text/event-stream" } });
+    expect(stream.headers.get("content-type") ?? "").not.toContain("text/markdown");
   });
 });

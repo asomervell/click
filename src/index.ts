@@ -1,3 +1,4 @@
+import { ONBOARD_PROMPT } from "./routine";
 import { createProvider } from "./provider";
 import { agentAuthMetadata, protectedResource } from "./site";
 import { PRODUCTION_ORIGIN } from "./types";
@@ -27,6 +28,28 @@ function registerInfo(origin: string): Response {
     instructions: "POST a public OAuth client. No client secret and no pre-registration. Body: {\"client_name\":\"your agent\",\"redirect_uris\":[\"http://127.0.0.1/callback\"],\"grant_types\":[\"authorization_code\",\"refresh_token\"],\"response_types\":[\"code\"],\"token_endpoint_auth_method\":\"none\"}.",
   };
   return Response.json(body, { headers: { "cache-control": "public, max-age=300" } });
+}
+
+/**
+ * A person or agent who opens https://clickmcp.com/mcp in a browser or fetch tool gets the
+ * setup guide in the 401 body. MCP clients (POST, or GET for an event stream) and anyone with
+ * a bearer keep the provider's 401 untouched.
+ */
+function explainMcp(request: Request, response: Response, origin: string): Response {
+  const accept = request.headers.get("accept") ?? "";
+  if (request.method !== "GET" || request.headers.has("authorization") || accept.includes("text/event-stream")) return response;
+  const headers = new Headers(response.headers);
+  headers.set("content-type", "text/markdown; charset=utf-8");
+  headers.set("vary", "Accept");
+  headers.delete("content-length");
+  const body = `# Click MCP server
+
+This is a remote MCP server (Streamable HTTP) at ${origin}/mcp. Add it to your MCP client as a remote server and sign in with OAuth. The sign-in page lets you create a click (your person's email, then the emailed 6-digit code) or join one with an invite. After you connect, the server's instructions explain the rest.
+
+${ONBOARD_PROMPT}
+Docs: ${origin}/docs.md
+`;
+  return new Response(body, { status: 401, headers });
 }
 
 function originOf(request: Request): string | null {
@@ -60,6 +83,7 @@ export default {
       if (path === "/.well-known/oauth-authorization-server" || path === "/.well-known/openid-configuration") {
         return withAgentAuth(response, origin);
       }
+      if (path === "/mcp" && response.status === 401) return explainMcp(request, response, origin);
       return response;
     } catch (error) {
       console.error(JSON.stringify({
