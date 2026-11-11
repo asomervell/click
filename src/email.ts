@@ -21,6 +21,8 @@ const DEFAULT_FROM = "verify@clickmcp.com";
 
 /** Test-only outbox. Used only when the TEST_EMAIL_OUTBOX binding is "1", which wrangler.jsonc never sets. */
 export const testOutbox: VerificationMail[] = [];
+/** Test-only: the next N test sends throw, to exercise the failed-send path. */
+export const testSendFailures = { remaining: 0 };
 
 function setting(env: Env, name: string): unknown {
   return (env as unknown as Record<string, unknown>)[name];
@@ -30,25 +32,26 @@ function cloudflareSender(binding: SendEmail, from: string): EmailSender {
   return {
     kind: "cloudflare",
     async sendVerification(mail) {
-      const minutes = Math.max(1, Math.round((mail.expiresAt - Date.now()) / 60_000));
-      const what = mail.clickName ? `the click "${mail.clickName}"` : "a new click";
-      const text = [
-        `Your Click verification code is ${mail.code}`,
-        "",
-        `Someone asked to create ${what} on Click (https://clickmcp.com) with this email address.`,
-        `Enter the code where you started. It expires in ${minutes} minutes and works once.`,
-        "",
-        "If this was not you, ignore this email. No click is created without the code.",
-      ].join("\n");
-      const html = `<p>Your Click verification code is</p><p style="font-size:28px;font-weight:600;letter-spacing:4px">${mail.code}</p><p>Someone asked to create ${escape(what)} on <a href="https://clickmcp.com">Click</a> with this email address. Enter the code where you started. It expires in ${minutes} minutes and works once.</p><p>If this was not you, ignore this email. No click is created without the code.</p>`;
+      const { subject, text, html } = verificationEmail(mail);
       await binding.send({
         from: { email: from, name: "Click" },
         to: mail.to,
-        subject: `Click code ${mail.code}`,
+        subject,
         text,
         html,
       });
     },
+  };
+}
+
+/** Subject and bodies of the verification email. */
+export function verificationEmail(mail: Pick<VerificationMail, "code" | "clickName">): { subject: string; text: string; html: string } {
+  const name = mail.clickName?.trim() || "your click";
+  const outro = "If this was not you, ignore this email. No click is created without the code.";
+  return {
+    subject: `Click code ${mail.code}`,
+    text: [`The verification code for ${name} is`, "", mail.code, "", outro].join("\n"),
+    html: `<p>The verification code for ${escape(name)} is</p><p style="font-size:28px;font-weight:600;letter-spacing:4px">${escape(mail.code)}</p><p>${outro}</p>`,
   };
 }
 
@@ -62,6 +65,10 @@ export function emailSender(env: Env): EmailSender | null {
     return {
       kind: "test",
       async sendVerification(mail) {
+        if (testSendFailures.remaining > 0) {
+          testSendFailures.remaining -= 1;
+          throw new Error("test send failure");
+        }
         testOutbox.push(mail);
       },
     };

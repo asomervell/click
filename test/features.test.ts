@@ -1,7 +1,7 @@
 import { env } from "cloudflare:workers";
 import { SELF } from "cloudflare:test";
 import { afterEach, describe, expect, it } from "vitest";
-import { signupMode } from "../src/email";
+import { signupMode, testSendFailures, verificationEmail } from "../src/email";
 import {
   api,
   callTool,
@@ -91,6 +91,37 @@ describe("email verification", () => {
       last = response.status;
     }
     expect(last).toBe(429);
+  });
+
+  it("does not count a failed send toward the per-email limit", async () => {
+    const email = testEmail();
+    testSendFailures.remaining = 3;
+    try {
+      for (let attempt = 0; attempt < 3; attempt++) {
+        const failed = await startCreate(LOCAL, email);
+        expect(failed.status).toBe(400);
+        expect((failed.body as Problem).detail).toMatch(/could not be sent/);
+      }
+    } finally {
+      testSendFailures.remaining = 0;
+    }
+    const sent = await startCreate(LOCAL, email);
+    expect(sent.status).toBe(202);
+    const verified = await verifyCreate(LOCAL, String(sent.body.pending_id), lastCode(email));
+    expect(verified.status).toBe(201);
+  });
+
+  it("writes a short verification email and escapes the click name", () => {
+    const named = verificationEmail({ code: "451683", clickName: "zz email test" });
+    expect(named.subject).toBe("Click code 451683");
+    expect(named.text).toBe("The verification code for zz email test is\n\n451683\n\nIf this was not you, ignore this email. No click is created without the code.");
+    expect(named.html).toBe('<p>The verification code for zz email test is</p><p style="font-size:28px;font-weight:600;letter-spacing:4px">451683</p><p>If this was not you, ignore this email. No click is created without the code.</p>');
+    const unnamed = verificationEmail({ code: "000123", clickName: null });
+    expect(unnamed.text.startsWith("The verification code for your click is\n")).toBe(true);
+    const hostile = verificationEmail({ code: "111111", clickName: "<b>\"x\" & y</b>" });
+    expect(hostile.html).toContain("for &lt;b&gt;&quot;x&quot; &amp; y&lt;/b&gt; is");
+    expect(hostile.html).not.toContain("<b>");
+    expect(hostile.text).not.toMatch(/someone asked|works once/i);
   });
 
   it("only skips verification behind the explicit flag when no sender exists", () => {
