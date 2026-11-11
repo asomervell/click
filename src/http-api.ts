@@ -21,7 +21,9 @@ export async function handleHttpApi(request: Request, env: Env, ctx: ExecutionCo
     const token = header.toLowerCase().startsWith("bearer ") ? header.slice(7).trim() : "";
     const props = token ? await resolveBearer(env, token, request) : null;
     if (!props) return problem(401, "Unauthorized", "unauthorized");
-    return json(await dispatch(request, env, ctx, props, path));
+    const result = await dispatch(request, env, ctx, props, path);
+    const created = request.method === "POST" && path === "/api/tokens";
+    return json(result, created ? 201 : 200);
   } catch (error) {
     const message = error instanceof ClickError ? error.message : error instanceof SyntaxError ? "JSON object required." : "Click failed.";
     const status = statusFor(message);
@@ -73,6 +75,20 @@ async function dispatch(request: Request, env: Env, ctx: ExecutionContext, props
   if (request.method === "POST" && path === "/api/invites") {
     const body = await readJson(request);
     return hub.createInvite(props, body.label ? String(body.label) : null);
+  }
+  if (request.method === "GET" && path === "/api/tokens") return hub.listTokens(props);
+  if (request.method === "POST" && path === "/api/tokens") {
+    const body = await readJson(request);
+    return hub.mintToken(props, {
+      handle: body.handle ? String(body.handle) : undefined,
+      name: body.name ? String(body.name) : undefined,
+      label: body.label ? String(body.label) : undefined,
+    });
+  }
+  if (request.method === "DELETE" && path.startsWith("/api/tokens/")) {
+    const tokenId = decodeURIComponent(path.slice("/api/tokens/".length));
+    if (!tokenId || tokenId.includes("/")) throw new ClickError("Unknown API route.");
+    return hub.revokeToken(props, tokenId);
   }
   throw new ClickError("Unknown API route.");
 }

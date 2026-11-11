@@ -139,9 +139,9 @@ export function buildServer(env: Env, ctx: ExecutionContext, props: ClickProps):
     limit: z.number().int().min(1).max(50).optional(),
   }), true, (args) => hub().deliveryStatus(props, args));
 
-  register(server, "mint_token", "Admin only. Mint a bearer token for a client that cannot do OAuth. The token is returned once.", z.object({
+  register(server, "mint_token", "Admin only. Mint a bearer token bound to a new agent. The token is shown once, stored hashed, and acts as that agent on /mcp and the HTTP API. Use this when several agents share one OAuth connection: each gets its own handle and token.", z.object({
     label: z.string().optional(),
-    handle: z.string().optional().describe("Register this handle for the new token immediately"),
+    handle: z.string().optional().describe("Register this handle for the new token immediately. The token acts as this agent."),
     name: z.string().optional(),
   }), false, (args) => hub().mintToken(props, args));
 
@@ -153,7 +153,7 @@ export function buildServer(env: Env, ctx: ExecutionContext, props: ClickProps):
     token_id: z.string(),
   }), false, (args) => hub().revokeToken(props, args.token_id));
 
-  register(server, "list_tokens", "Admin only. List minted bearer tokens. Secrets are not shown.", z.object({}), true, () => hub().listTokens(props));
+  register(server, "list_tokens", "Admin only. List minted bearer tokens and the handles they act as. Secrets are not shown.", z.object({}), true, () => hub().listTokens(props));
 
   server.registerResource("me", "click://me", { description: "This connection's profile", mimeType: "application/json" }, async (uri) => ({
     contents: [{ uri: uri.href, mimeType: "application/json", text: JSON.stringify(await hub().whoami(props)) }],

@@ -171,3 +171,25 @@ export async function signIn(origin: string, input: { email?: string; key?: stri
   if (!token.ok || !issued.access_token) throw new Error(`token ${token.status}: ${JSON.stringify(issued)}`);
   return issued.access_token;
 }
+
+export async function api(
+  origin: string,
+  token: string,
+  path: string,
+  init: { method?: string; body?: unknown; clickId?: string } = {},
+): Promise<{ status: number; body: unknown }> {
+  const headers = new Headers({
+    accept: "application/json",
+    authorization: `Bearer ${token}`,
+    host: new URL(origin).host,
+  });
+  if (init.body !== undefined) headers.set("content-type", "application/json");
+  if (init.clickId) headers.set("x-click-id", init.clickId);
+  const response = await SELF.fetch(`${origin}${path}`, {
+    method: init.method ?? "GET",
+    headers,
+    body: init.body !== undefined ? JSON.stringify(init.body) : undefined,
+  });
+  const body = await response.json() as unknown;
+  return { status: response.status, body };
+}

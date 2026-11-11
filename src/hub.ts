@@ -645,6 +645,7 @@ export class ClickHub extends DurableObject<Env> {
     principal_id: string;
     role: Role;
     label: string | null;
+    handle: string | null;
     created_at: number;
     revoked: boolean;
   }>> {
@@ -655,10 +656,15 @@ export class ClickHub extends DurableObject<Env> {
         principal_id: string;
         role: Role;
         label: string | null;
+        handle: string | null;
         created_at: number;
         revoked_at: number | null;
       }>(
-        `SELECT id, principal_id, role, label, created_at, revoked_at FROM api_tokens ORDER BY created_at DESC LIMIT 100`,
+        `SELECT t.id, t.principal_id, t.role, t.label, a.handle, t.created_at, t.revoked_at
+         FROM api_tokens t
+         LEFT JOIN agents a ON a.principal_id = t.principal_id
+         ORDER BY t.created_at DESC
+         LIMIT 100`,
       )
       .toArray()
       .map((row) => ({
@@ -666,6 +672,7 @@ export class ClickHub extends DurableObject<Env> {
         principal_id: row.principal_id,
         role: row.role,
         label: row.label,
+        handle: row.handle,
         created_at: row.created_at,
         revoked: row.revoked_at != null,
       }));

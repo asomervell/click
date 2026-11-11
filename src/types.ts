@@ -37,3 +37,16 @@ export type Profile = {
     created_at: number;
   } | null;
 };
+
+declare global {
+  // Optional operator secret. Set with `wrangler secret put OWNER_KEY_HASH`.
+  // wrangler types does not emit secret bindings, so this is declared here.
+  interface Env {
+    OWNER_KEY_HASH?: string;
+  }
+  namespace Cloudflare {
+    interface Env {
+      OWNER_KEY_HASH?: string;
+    }
+  }
+}

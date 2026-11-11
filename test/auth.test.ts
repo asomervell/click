@@ -1,6 +1,6 @@
 import { SELF } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
-import { callTool, createClick, handle, initialize, LOCAL, OWNER_KEY, signIn } from "./helpers";
+import { api, callTool, createClick, handle, initialize, LOCAL, OWNER_KEY, signIn } from "./helpers";
 
 describe("auth", () => {
   it("advertises OAuth metadata for the request origin, including the bare path", async () => {
@@ -66,6 +66,8 @@ describe("auth", () => {
       handle: string;
     };
     expect(minted.handle).toBe(name);
+    const tokens = await callTool(LOCAL, created.click_key, "list_tokens") as Array<{ handle: string | null; revoked: boolean }>;
+    expect(tokens.some((row) => row.handle === name && !row.revoked)).toBe(true);
     await initialize(LOCAL, minted.token);
     await expect(callTool(LOCAL, minted.token, "mint_token", {})).rejects.toThrow(/admin/i);
 
@@ -140,9 +142,11 @@ describe("auth", () => {
     const missing = await SELF.fetch(`${LOCAL}/missing-page`, { headers: { accept: "text/markdown" } });
     expect(missing.status).toBe(404);
     expect(missing.headers.get("content-type")).toContain("text/markdown");
-    const openapi = await (await SELF.fetch(`${LOCAL}/openapi.json`)).json() as { paths: Record<string, { get?: { responses: Record<string, unknown> } }> };
+    const openapi = await (await SELF.fetch(`${LOCAL}/openapi.json`)).json() as { paths: Record<string, { get?: { responses: Record<string, unknown> }; post?: { responses: Record<string, unknown> }; delete?: { responses: Record<string, unknown> } }> };
     expect(openapi.paths["/api/v1/inbox"]?.get?.responses["200"]).toBeTruthy();
     expect(openapi.paths["/api/v1/inbox"]?.get?.responses["429"]).toBeTruthy();
+    expect(openapi.paths["/api/v1/tokens"]?.post?.responses["201"]).toBeTruthy();
+    expect(openapi.paths["/api/v1/tokens/{token_id}"]?.delete?.responses["200"]).toBeTruthy();
     const created = await SELF.fetch(`${LOCAL}/api/v1/clicks`, {
       method: "POST",
       headers: { "content-type": "application/json", host: new URL(LOCAL).host },
@@ -175,6 +179,63 @@ describe("auth", () => {
       originHeader: "null",
     });
     expect(token.length).toBeGreaterThan(10);
+  });
+
+  it("mints per-agent HTTP tokens, delivers mail, and revokes them", async () => {
+    const created = await createClick();
+    const aHandle = handle("test-a");
+    const bHandle = handle("test-b");
+    const mintedA = await api(LOCAL, created.click_key, "/api/v1/tokens", {
+      method: "POST",
+      body: { handle: aHandle, name: "Test A" },
+    });
+    const mintedB = await api(LOCAL, created.click_key, "/api/v1/tokens", {
+      method: "POST",
+      body: { handle: bHandle, name: "Test B" },
+    });
+    expect(mintedA.status).toBe(201);
+    expect(mintedB.status).toBe(201);
+    const tokenA = mintedA.body as { token: string; token_id: string; handle: string };
+    const tokenB = mintedB.body as { token: string; token_id: string; handle: string };
+    expect(tokenA.handle).toBe(aHandle);
+    expect(tokenB.handle).toBe(bHandle);
+
+    const listed = await api(LOCAL, created.click_key, "/api/v1/tokens");
+    expect(listed.status).toBe(200);
+    const rows = listed.body as Array<{ id: string; handle: string | null; revoked: boolean }>;
+    expect(rows.some((row) => row.id === tokenA.token_id && row.handle === aHandle && !row.revoked)).toBe(true);
+    expect(rows.some((row) => row.id === tokenB.token_id && row.handle === bHandle && !row.revoked)).toBe(true);
+
+    const me = await api(LOCAL, tokenA.token, "/api/v1/me");
+    expect((me.body as { agent: { handle: string } }).agent.handle).toBe(aHandle);
+
+    const sent = await api(LOCAL, tokenA.token, "/api/v1/messages", {
+      method: "POST",
+      body: { to: bHandle, text: "hello from a" },
+    });
+    expect(sent.status).toBe(200);
+    expect((sent.body as { recipients: string[] }).recipients).toEqual([bHandle]);
+
+    const inbox = await api(LOCAL, tokenB.token, "/api/v1/inbox");
+    const messages = (inbox.body as { messages: Array<{ id: string; from: string; text: string }> }).messages;
+    expect(messages).toHaveLength(1);
+    expect(messages[0]?.from).toBe(aHandle);
+    expect(messages[0]?.text).toBe("hello from a");
+
+    const acked = await api(LOCAL, tokenB.token, "/api/v1/ack", {
+      method: "POST",
+      body: { ids: [messages[0]!.id] },
+    });
+    expect((acked.body as { acked: string[] }).acked).toEqual([messages[0]?.id]);
+    const empty = await api(LOCAL, tokenB.token, "/api/v1/inbox");
+    expect((empty.body as { messages: unknown[] }).messages).toEqual([]);
+
+    const revokedA = await api(LOCAL, created.click_key, `/api/v1/tokens/${tokenA.token_id}`, { method: "DELETE" });
+    const revokedB = await api(LOCAL, created.click_key, `/api/v1/tokens/${tokenB.token_id}`, { method: "DELETE" });
+    expect((revokedA.body as { revoked: boolean }).revoked).toBe(true);
+    expect((revokedB.body as { revoked: boolean }).revoked).toBe(true);
+    const denied = await api(LOCAL, tokenA.token, "/api/v1/me");
+    expect(denied.status).toBe(401);
   });
 
   it("rejects a cross-site authorize post with a sign-in page", async () => {
