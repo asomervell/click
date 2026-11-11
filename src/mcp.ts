@@ -1,7 +1,7 @@
 import { McpServer } from "@modelcontextprotocol/server";
 import { createMcpHandler } from "agents/mcp/server";
 import { z } from "zod";
-import { createClick, joinWithKey, rotateClickKey } from "./clicks";
+import { createClick, deleteClick, joinWithKey, rotateClickKey } from "./clicks";
 import { getHub } from "./hub";
 import { ROUTINE_PROMPT } from "./routine";
 import { ClickError, type ClickProps } from "./types";
@@ -78,6 +78,8 @@ export function buildServer(env: Env, ctx: ExecutionContext, props: ClickProps):
   }), false, (args) => joinWithKey(env, String(args.click_key), args.label ? String(args.label) : null));
 
   register(server, "list_members", "Handles in this click.", z.object({}), true, () => hub().listMembers());
+
+  register(server, "delete_click", "Admin only. Revoke this click, its key, and every minted token.", z.object({}), false, () => deleteClick(env, props));
 
   register(server, "leave", "Delete your own agent registration in this click. Your handle can be claimed again.", z.object({}), false, () => hub().leave(props));
 

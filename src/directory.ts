@@ -97,7 +97,26 @@ export class ClickDirectory extends DurableObject<Env> {
       )
       .toArray()[0];
     if (!token) return null;
+    const live = this.ctx.storage.sql
+      .exec<{ id: string }>(`SELECT id FROM clicks WHERE id = ? AND revoked_at IS NULL`, token.click_id)
+      .toArray()[0];
+    if (!live) return null;
     return { clickId: token.click_id, principalId: token.principal_id, role: token.role };
+  }
+
+  async revokeClick(clickId: string): Promise<void> {
+    const now = Date.now();
+    const result = this.ctx.storage.sql.exec(
+      `UPDATE clicks SET revoked_at = ? WHERE id = ? AND revoked_at IS NULL`,
+      now,
+      clickId,
+    );
+    if (result.rowsWritten !== 1) throw new ClickError("That click was not found.");
+    this.ctx.storage.sql.exec(
+      `UPDATE api_tokens SET revoked_at = ? WHERE click_id = ? AND revoked_at IS NULL`,
+      now,
+      clickId,
+    );
   }
 
   async clickExists(clickId: string): Promise<boolean> {

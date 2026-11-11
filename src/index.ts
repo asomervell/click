@@ -9,9 +9,21 @@ async function withAgentAuth(response: Response, origin: string): Promise<Respon
   if (!response.ok) return response;
   const metadata = await response.json() as Record<string, unknown>;
   metadata.agent_auth = agentAuthMetadata(origin);
+  const listed = Array.isArray(metadata.protected_resources) ? metadata.protected_resources.map(String) : [];
+  metadata.protected_resources = [...new Set([origin, `${origin}/mcp`, ...listed])];
   const headers = new Headers(response.headers);
   headers.set("content-type", "application/json; charset=utf-8");
   return new Response(JSON.stringify(metadata), { status: response.status, headers });
+}
+
+function registerInfo(origin: string): Response {
+  const body = {
+    open: true,
+    token_endpoint_auth_method: "none",
+    registration_endpoint: `${origin}/register`,
+    instructions: "POST a public OAuth client. No client secret and no pre-registration. Body: {\"client_name\":\"your agent\",\"redirect_uris\":[\"http://127.0.0.1/callback\"],\"grant_types\":[\"authorization_code\",\"refresh_token\"],\"response_types\":[\"code\"],\"token_endpoint_auth_method\":\"none\"}.",
+  };
+  return Response.json(body, { headers: { "cache-control": "public, max-age=300" } });
 }
 
 function originOf(request: Request): string | null {
@@ -31,6 +43,9 @@ export default {
     const path = new URL(request.url).pathname;
     if (path === "/.well-known/oauth-protected-resource") {
       return Response.json(protectedResource(origin));
+    }
+    if (path === "/register" && request.method === "GET") {
+      return registerInfo(origin);
     }
     try {
       let response = await createProvider(origin).fetch(request, env, ctx);

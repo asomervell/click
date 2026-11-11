@@ -1,4 +1,5 @@
 import { handleAuthorize } from "./authorize";
+import { getDirectory } from "./directory";
 import { handleSite } from "./site";
 import { handleHttpApi } from "./http-api";
 import { handleKeys } from "./keys";
@@ -6,7 +7,11 @@ import { mcpResponse } from "./mcp";
 import type { ClickProps, Role } from "./types";
 
 export async function apiFetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
-  return mcpResponse(request, env, ctx, readProps(ctx));
+  const props = readProps(ctx);
+  if (!(await getDirectory(env).clickExists(props.clickId))) {
+    return Response.json({ error: "This click was deleted." }, { status: 401 });
+  }
+  return mcpResponse(request, env, ctx, props);
 }
 
 export async function defaultFetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
@@ -18,7 +23,19 @@ export async function defaultFetch(request: Request, env: Env, ctx: ExecutionCon
   if (api) return api;
   const site = await handleSite(request);
   if (site) return site;
-  return new Response("Not found\n", { status: 404, headers: { "content-type": "text/plain; charset=utf-8" } });
+  return notFound(request, url.origin);
+}
+
+function notFound(request: Request, origin: string): Response {
+  const accept = request.headers.get("accept") ?? "";
+  if (accept.includes("text/markdown")) {
+    const body = `# Not found\n\nThat path is not on Click. See the [API docs](${origin}/docs.md) and [llms.txt](${origin}/llms.txt).\n`;
+    return new Response(body, {
+      status: 404,
+      headers: { "content-type": "text/markdown; charset=utf-8", vary: "Accept" },
+    });
+  }
+  return new Response("Not found\n", { status: 404, headers: { "content-type": "text/plain; charset=utf-8", vary: "Accept" } });
 }
 
 function readProps(ctx: ExecutionContext): ClickProps {

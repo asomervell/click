@@ -21,7 +21,7 @@ describe("auth", () => {
     const bare = await SELF.fetch("https://clickmcp.com/.well-known/oauth-protected-resource");
     const bareBody = await bare.json() as { resource?: string };
     expect(bare.status).toBe(200);
-    expect(bareBody.resource).toBe("https://clickmcp.com/mcp");
+    expect(bareBody.resource).toBe("https://clickmcp.com");
 
     const local = await SELF.fetch(`${LOCAL}/.well-known/oauth-protected-resource/mcp`);
     const localBody = await local.json() as { resource?: string; authorization_servers?: string[] };
@@ -85,5 +85,57 @@ describe("auth", () => {
     expect(await markdown.text()).toContain("click key");
     const robots = await SELF.fetch(`${LOCAL}/robots.txt`);
     expect(await robots.text()).toContain("Content-Signal:");
+    expect(html).toContain("<h1");
+    expect(html).toContain('property="og:image"');
+    expect(html).toContain("Organization");
+    expect(html).toContain('href="/docs"');
+  });
+
+  it("serves auth.md, catalog, poppy, pages, and a markdown 404", async () => {
+    const auth = await (await SELF.fetch(`${LOCAL}/auth.md`)).text();
+    expect(auth.startsWith("# auth.md")).toBe(true);
+    const catalog = await SELF.fetch(`${LOCAL}/.well-known/ai-catalog.json`);
+    expect(catalog.headers.get("content-type")).toBe("application/json");
+    const catalogBody = await catalog.json() as { host: { identifier: string }; entries: Array<{ identifier: string }> };
+    expect(catalogBody.host.identifier).toContain("did:web:");
+    expect(catalogBody.entries[0]?.identifier.startsWith("urn:air:")).toBe(true);
+    const poppy = await (await SELF.fetch(`${LOCAL}/.well-known/poppy.json`)).json() as { protocol_version: string; organization: { name: string } };
+    expect(poppy.protocol_version).toBe("0.3");
+    expect(poppy.organization.name).toBe("Click");
+    for (const path of ["/about", "/contact", "/privacy"]) {
+      const text = await (await SELF.fetch(`${LOCAL}${path}`)).text();
+      expect(text.length).toBeGreaterThan(500);
+    }
+    expect(await (await SELF.fetch(`${LOCAL}/contact`)).text()).toContain("https://github.com/asomervell/click/issues");
+    const missing = await SELF.fetch(`${LOCAL}/missing-page`, { headers: { accept: "text/markdown" } });
+    expect(missing.status).toBe(404);
+    expect(missing.headers.get("content-type")).toContain("text/markdown");
+    const openapi = await (await SELF.fetch(`${LOCAL}/openapi.json`)).json() as { paths: Record<string, { get?: { responses: Record<string, unknown> } }> };
+    expect(openapi.paths["/api/v1/inbox"]?.get?.responses["200"]).toBeTruthy();
+    expect(openapi.paths["/api/v1/inbox"]?.get?.responses["429"]).toBeTruthy();
+    const created = await SELF.fetch(`${LOCAL}/api/v1/clicks`, {
+      method: "POST",
+      headers: { "content-type": "application/json", host: new URL(LOCAL).host },
+      body: JSON.stringify({ email: `rate-${crypto.randomUUID().slice(0, 8)}@example.com` }),
+    });
+    expect(created.headers.get("ratelimit")).toBeTruthy();
+    expect(created.status).toBe(201);
+    const register = await SELF.fetch(`${LOCAL}/register`);
+    expect(register.status).toBe(200);
+    const card = await (await SELF.fetch(`${LOCAL}/.well-known/mcp/server-card.json`)).json() as { tools: Array<{ name: string }> };
+    expect(card.tools.some((tool) => tool.name === "send")).toBe(true);
+  });
+
+  it("lets an admin delete a click", async () => {
+    const created = await createClick();
+    const removed = await SELF.fetch(`${LOCAL}/api/clicks`, {
+      method: "DELETE",
+      headers: { authorization: `Bearer ${created.click_key}`, host: new URL(LOCAL).host },
+    });
+    expect(removed.status).toBe(200);
+    const again = await SELF.fetch(`${LOCAL}/api/me`, {
+      headers: { authorization: `Bearer ${created.click_key}`, host: new URL(LOCAL).host },
+    });
+    expect(again.status).toBe(401);
   });
 });

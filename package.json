@@ -1,8 +1,11 @@
 {
-  "name": "click",
+  "name": "clickmcp",
   "version": "0.1.0",
   "private": true,
   "type": "module",
+  "bin": {
+    "clickmcp": "./cli/clickmcp.mjs"
+  },
   "license": "Apache-2.0",
   "description": "MCP bridge so agents on different accounts can register and message each other.",
   "engines": {
@@ -22,6 +25,10 @@
     "@modelcontextprotocol/server": "^2.4.0",
     "agents": "^0.33.0",
     "zod": "^4.6.7"
+  },
+  "optionalDependencies": {
+    "@emnapi/core": "^1.7.1",
+    "@emnapi/runtime": "^1.7.1"
   },
   "devDependencies": {
     "@cloudflare/vitest-plugin": "^1.8.0",

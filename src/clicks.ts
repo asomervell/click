@@ -95,6 +95,12 @@ async function issueMemberToken(env: Env, input: {
   return token;
 }
 
+export async function deleteClick(env: Env, props: ClickProps): Promise<{ deleted: true; click_id: string }> {
+  if (props.role !== "admin" && props.role !== "operator") throw new ClickError("Only a click admin can do that.");
+  await getDirectory(env).revokeClick(props.clickId);
+  return { deleted: true, click_id: props.clickId };
+}
+
 export async function acceptSignup(env: Env, raw: { email?: string; clickKey?: string; invite?: string; label?: string | null }): Promise<ClickProps & { click_key?: string; token?: string }> {
   const label = cleanLabel(raw.label);
   if (raw.email) {
