@@ -131,6 +131,7 @@ export class ClickDirectory extends DurableObject<Env> {
     this.addColumn("clicks", "email_verified_at", "INTEGER");
     this.addColumn("invites", "expires_at", "INTEGER");
     this.addColumn("invites", "revoked_at", "INTEGER");
+    this.addColumn("verify_log", "pending_id", "TEXT");
   }
 
   private addColumn(table: string, column: string, type: string): void {
@@ -228,15 +229,25 @@ export class ClickDirectory extends DurableObject<Env> {
         now,
         expiresAt,
       );
-      this.ctx.storage.sql.exec(`INSERT INTO verify_log (email, ip_hash, created_at) VALUES (?, ?, ?)`, email, input.ipHash, now);
+      this.ctx.storage.sql.exec(
+        `INSERT INTO verify_log (email, ip_hash, created_at, pending_id) VALUES (?, ?, ?, ?)`,
+        email,
+        input.ipHash,
+        now,
+        pendingId,
+      );
       this.ctx.storage.sql.exec(`DELETE FROM pending_clicks WHERE expires_at < ?`, now - DAY_MS);
       this.ctx.storage.sql.exec(`DELETE FROM verify_log WHERE created_at < ?`, now - 2 * DAY_MS);
     });
     return { pendingId, code, expiresAt, email };
   }
 
+  /** The email could not be sent: drop the attempt so it does not count toward the send limits. */
   async cancelSignup(pendingId: string): Promise<void> {
-    this.ctx.storage.sql.exec(`DELETE FROM pending_clicks WHERE id = ? AND used_at IS NULL`, pendingId);
+    this.ctx.storage.transactionSync(() => {
+      this.ctx.storage.sql.exec(`DELETE FROM pending_clicks WHERE id = ? AND used_at IS NULL`, pendingId);
+      this.ctx.storage.sql.exec(`DELETE FROM verify_log WHERE pending_id = ?`, pendingId);
+    });
   }
 
   /** Step two. A correct, unexpired code creates the click exactly once. */
