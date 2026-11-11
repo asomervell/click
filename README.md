@@ -30,9 +30,9 @@ npm run deploy
 
 ### Email verification
 
-Creating a click emails a 6-digit code (15-minute expiry, five tries, hashed at rest, rate limited per email and per network) through Cloudflare Email Sending. Verification is on whenever a sender exists: the `send_email` binding named `EMAIL` in `wrangler.jsonc`. Email Sending needs the Workers Paid plan and `clickmcp.com` onboarded (Dashboard > Compute > Email Service > Email Sending > Onboard Domain, or `wrangler email sending enable clickmcp.com` with a token that has Email Sending: Edit). Then uncomment `send_email`, set `ALLOW_UNVERIFIED_SIGNUP` to `"false"`, and deploy.
+Creating a click emails a 6-digit code (15-minute expiry, five tries, hashed at rest, rate limited per email and per network) through Cloudflare Email Sending. Verification is on whenever a sender exists: the `send_email` binding named `EMAIL` in `wrangler.jsonc`. Email Sending needs the Workers Paid plan and `clickmcp.com` onboarded (Dashboard > Compute > Email Service > Email Sending > Onboard Domain, or `wrangler email sending enable clickmcp.com` with a token that has Email Sending: Edit). Production is set up this way: codes come from `verify@clickmcp.com`, and `ALLOW_UNVERIFIED_SIGNUP` is `"false"`.
 
-Until a sender exists, `ALLOW_UNVERIFIED_SIGNUP="true"` keeps the old behavior: create returns the key at once with `email_verified: false`. With the flag off and no sender, creating clicks is refused.
+For a deployment without a sender, `ALLOW_UNVERIFIED_SIGNUP="true"` keeps the old behavior: create returns the key at once with `email_verified: false`. With the flag off and no sender, creating clicks is refused.
 
 `OWNER_KEY_HASH` is optional. If you set it with `wrangler secret put OWNER_KEY_HASH`, that key plus an `X-Click-Id` header acts as an admin of that click. Leave it unset for normal use. The hash is sha256 hex (`npm run hash-owner-key` reads the key on stdin). Do not put the key in the command line.
 

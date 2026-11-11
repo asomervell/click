@@ -29,13 +29,12 @@
     "crons": ["17 4 * * *"]
   },
   "kv_namespaces": [{ "binding": "OAUTH_KV" }],
-  // Email verification for new clicks. Verification turns on by itself as soon as a
-  // sender exists: uncomment send_email after clickmcp.com is onboarded to Cloudflare
-  // Email Sending (needs Workers Paid), then set ALLOW_UNVERIFIED_SIGNUP to "false".
-  // Until then ALLOW_UNVERIFIED_SIGNUP="true" keeps the old immediate-key create.
-  // "send_email": [{ "name": "EMAIL", "allowed_sender_addresses": ["verify@clickmcp.com"] }],
+  // Email verification for new clicks. clickmcp.com is onboarded to Cloudflare Email
+  // Sending (cf-bounce MX/SPF, DKIM selector cf-bounce, DMARC). With this binding present,
+  // creating a click always emails a 6-digit code before the key is issued.
+  "send_email": [{ "name": "EMAIL", "allowed_sender_addresses": ["verify@clickmcp.com"] }],
   "vars": {
-    "ALLOW_UNVERIFIED_SIGNUP": "true",
+    "ALLOW_UNVERIFIED_SIGNUP": "false",
     "EMAIL_FROM": "verify@clickmcp.com"
   },
   "durable_objects": {
