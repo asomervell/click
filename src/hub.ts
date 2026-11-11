@@ -196,13 +196,21 @@ export class ClickHub extends DurableObject<Env> {
     webhook_key?: string;
   }): Promise<Profile> {
     const handle = requireHandle(input.handle);
+    const existing = this.agentByPrincipal(props.principalId);
+    if (existing) {
+      if (existing.handle !== handle) {
+        throw new ClickError(`This connection is already registered as ${existing.handle}. Use update_profile.`);
+      }
+      return this.updateProfile(props, {
+        name: input.name,
+        description: input.description,
+        webhook_url: input.webhook_url,
+        webhook_key: input.webhook_key,
+      });
+    }
     const name = requireName(input.name, handle);
     const description = requireDescription(input.description);
     const webhook = this.optionalWebhook(input.webhook_url, input.webhook_key);
-    const existing = this.agentByPrincipal(props.principalId);
-    if (existing) {
-      throw new ClickError(`This connection is already registered as ${existing.handle}. Use update_profile.`);
-    }
     if (this.agentByHandle(handle)) throw new ClickError(`The handle ${handle} is taken.`);
     const now = Date.now();
     this.ctx.storage.transactionSync(() => {

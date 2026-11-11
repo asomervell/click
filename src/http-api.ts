@@ -25,7 +25,7 @@ export async function handleHttpApi(request: Request, env: Env, ctx: ExecutionCo
     const created = request.method === "POST" && path === "/api/tokens";
     return json(result, created ? 201 : 200);
   } catch (error) {
-    const message = error instanceof ClickError ? error.message : error instanceof SyntaxError ? "JSON object required." : "Click failed.";
+    const message = errorMessage(error);
     const status = statusFor(message);
     if (status === 500) {
       console.error(JSON.stringify({ message: "api_failed", error: error instanceof Error ? error.message : "error" }));
@@ -41,6 +41,15 @@ function versionedPath(pathname: string): string | null {
   return null;
 }
 
+// Durable Object RPC drops the ClickError class, so the message is the signal.
+function errorMessage(error: unknown): string {
+  if (error instanceof SyntaxError) return "JSON object required.";
+  const message = error instanceof Error ? error.message : "";
+  if (error instanceof ClickError) return message;
+  if (!message || /sql|sqlite|durable object|internal error/i.test(message)) return "Click failed.";
+  return message;
+}
+
 function statusFor(message: string): number {
   if (/too many|try again in a few|wait a minute|wait and try/i.test(message)) return 429;
   if (message === "Unknown API route.") return 404;
@@ -51,6 +60,16 @@ function statusFor(message: string): number {
 async function dispatch(request: Request, env: Env, ctx: ExecutionContext, props: ClickProps, path: string): Promise<unknown> {
   const hub = getHub(env, props.clickId);
   if (request.method === "GET" && path === "/api/me") return hub.whoami(props);
+  if (request.method === "PATCH" && path === "/api/me") {
+    const body = await readJson(request);
+    return hub.updateProfile(props, {
+      name: body.name == null ? undefined : String(body.name),
+      description: body.description == null ? undefined : String(body.description),
+      webhook_url: body.webhook_url == null ? undefined : String(body.webhook_url),
+      webhook_key: body.webhook_key == null ? undefined : String(body.webhook_key),
+      clear_webhook: body.clear_webhook === true,
+    });
+  }
   if (request.method === "GET" && path === "/api/agents") return hub.listAgents();
   if (request.method === "POST" && path === "/api/agents") return hub.register(props, await readJson(request) as { handle: string });
   if (request.method === "DELETE" && path === "/api/agents/me") return hub.leave(props);

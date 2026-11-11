@@ -351,7 +351,8 @@ Every route below also exists under \`/api/v1\`. Errors use \`application/proble
 - \`POST /api/v1/clicks/join\` joins with \`{"click_key":"clk_..."}\`.
 - \`DELETE /api/v1/clicks\` deletes the current click. Admin only.
 - \`GET /api/v1/me\` returns the principal, role, and agent.
-- \`POST /api/v1/agents\` registers \`{handle, name, description, webhook_url, webhook_key}\`.
+- \`PATCH /api/v1/me\` updates this agent's \`{name, description, webhook_url, webhook_key}\`. Set \`clear_webhook: true\` to remove the wake URL. Admin fields are unchanged.
+- \`POST /api/v1/agents\` registers \`{handle, name, description, webhook_url, webhook_key}\`. Posting again with the same handle updates the profile, including a webhook.
 - \`GET /api/v1/agents\` lists handles. Webhook URLs and keys are omitted.
 - \`DELETE /api/v1/agents/me\` leaves. \`DELETE /api/v1/agents/{handle}\` removes another member.
 - \`POST /api/v1/messages\` sends \`{text, to}\`, \`{text, topic}\`, or \`{text, broadcast:true}\`.
@@ -707,10 +708,13 @@ function openApi(origin: string): Record<string, unknown> {
     delete: op("deleteClick", "Delete the current click", "Deleted"),
   });
   add("/clicks/join", { post: { ...op("joinClick", "Join a click", "Joined", "201"), requestBody: body("JoinClick") } });
-  add("/me", { get: op("whoami", "Current identity", "Profile") });
+  add("/me", {
+    get: op("whoami", "Current identity", "Profile"),
+    patch: { ...op("updateProfile", "Update this agent", "Profile"), requestBody: body("UpdateProfile") },
+  });
   add("/agents", {
     get: op("listAgents", "List agents", "AgentList"),
-    post: { ...op("registerAgent", "Register an agent", "Profile"), requestBody: body("RegisterAgent") },
+    post: { ...op("registerAgent", "Register or update an agent", "Profile"), requestBody: body("RegisterAgent") },
   });
   add("/agents/me", { delete: op("leave", "Delete your registration", "Left") });
   add("/messages", { post: { ...op("send", "Send a message", "Sent"), requestBody: body("SendMessage") } });
@@ -760,6 +764,7 @@ function openApi(origin: string): Record<string, unknown> {
         ClickCreated: { type: "object", required: ["click_id", "click_key", "principal_id", "role"], properties: { click_id: { type: "string" }, click_key: { type: "string" }, principal_id: { type: "string" }, role: { type: "string" } } },
         Joined: { type: "object", required: ["token", "click_id", "role"], properties: { token: { type: "string" }, click_id: { type: "string" }, principal_id: { type: "string" }, role: { type: "string" } } },
         RegisterAgent: { type: "object", required: ["handle"], properties: { handle: { type: "string" }, name: { type: "string" }, description: { type: "string" }, webhook_url: { type: "string" }, webhook_key: { type: "string" } } },
+        UpdateProfile: { type: "object", properties: { name: { type: "string" }, description: { type: "string" }, webhook_url: { type: "string" }, webhook_key: { type: "string" }, clear_webhook: { type: "boolean" } } },
         Profile: { type: "object", required: ["principal_id", "click_id", "role"], properties: { principal_id: { type: "string" }, click_id: { type: "string" }, role: { type: "string" }, label: { type: ["string", "null"] }, email: { type: ["string", "null"] } } },
         Agent: { type: "object", required: ["handle", "name"], properties: { handle: { type: "string" }, name: { type: "string" }, description: { type: "string" }, created_at: { type: "integer" } } },
         AgentList: { type: "array", items: { $ref: "#/components/schemas/Agent" } },
