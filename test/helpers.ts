@@ -92,7 +92,7 @@ export async function createClick(origin = LOCAL): Promise<{ click_id: string; c
   return { click_id: body.click_id, click_key: body.click_key, principal_id: body.principal_id };
 }
 
-export async function signIn(origin: string, input: { email?: string; key?: string }): Promise<string> {
+export async function signIn(origin: string, input: { email?: string; key?: string; originHeader?: string | null }): Promise<string> {
   const registered = await SELF.fetch(new Request(`${origin}/register`, {
     method: "POST",
     headers: { "content-type": "application/json" },
@@ -125,9 +125,11 @@ export async function signIn(origin: string, input: { email?: string; key?: stri
   }
   const rawHandle = /name="handle" value="([^"]+)"/.exec(html)?.[1];
   const handle = rawHandle?.replaceAll("&amp;", "&").replaceAll("&quot;", '"').replaceAll("&#39;", "'");
-  if (!handle) throw new Error(`consent handle missing: ${html}`);
+  const csrf = /name="csrf" value="([^"]+)"/.exec(html)?.[1];
+  if (!handle || !csrf) throw new Error(`consent handle missing: ${html}`);
   const form = new URLSearchParams();
   form.set("handle", handle);
+  form.set("csrf", csrf);
   form.set("mode", input.email ? "create" : "join");
   if (input.email) form.set("email", input.email);
   if (input.key) form.set("key", input.key);
@@ -141,7 +143,7 @@ export async function signIn(origin: string, input: { email?: string; key?: stri
     headers: {
       "content-type": "application/x-www-form-urlencoded",
       cookie: cookies(page),
-      origin,
+      ...(input.originHeader === null ? {} : { origin: input.originHeader ?? origin }),
     },
     body: form,
   }));

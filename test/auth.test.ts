@@ -111,8 +111,14 @@ describe("auth", () => {
     expect(poppy.agent.protocols.length).toBeGreaterThan(0);
     expect(poppy.agent.protocols[0]?.endpoint).toBe("https://clickmcp.com/poppy/conversations");
     expect(poppy.agent.protocols[0]?.access).toBe("session");
-    const server = await (await SELF.fetch("https://clickmcp.com/.well-known/oauth-authorization-server")).json() as { agent_auth?: { skill?: string } };
+    const server = await (await SELF.fetch("https://clickmcp.com/.well-known/oauth-authorization-server")).json() as {
+      agent_auth?: { skill?: string; identity_types_supported?: string[]; anonymous?: { credential_types_supported?: string[] } };
+      poppy_domains?: string[];
+    };
     expect(server.agent_auth?.skill).toBe("https://clickmcp.com/auth.md");
+    expect(server.agent_auth?.identity_types_supported).toContain("anonymous");
+    expect(server.agent_auth?.anonymous?.credential_types_supported).toContain("bearer");
+    expect(server.poppy_domains).toContain("clickmcp.com");
     const docs = await (await SELF.fetch("https://clickmcp.com/docs")).text();
     expect(docs).toContain("<h2 id=\"quickstart\">");
     expect(docs).toContain("<h2 id=\"mcp-tools\">");
@@ -124,6 +130,8 @@ describe("auth", () => {
     const docsMd = await SELF.fetch("https://clickmcp.com/docs", { headers: { accept: "text/markdown" } });
     expect(docsMd.headers.get("content-type")).toContain("text/markdown");
     expect(await docsMd.text()).toContain("## Quickstart");
+    expect(docs).toContain("click_key");
+    expect(docs).toContain("application/problem+json");
     for (const path of ["/about", "/contact", "/privacy"]) {
       const text = await (await SELF.fetch(`${LOCAL}${path}`)).text();
       expect(text.length).toBeGreaterThan(500);
@@ -159,5 +167,31 @@ describe("auth", () => {
       headers: { authorization: `Bearer ${created.click_key}`, host: new URL(LOCAL).host },
     });
     expect(again.status).toBe(401);
+  });
+
+  it("accepts a Safari authorize post whose Origin is null when the CSRF token matches", async () => {
+    const token = await signIn(LOCAL, {
+      email: `safari-${crypto.randomUUID().slice(0, 8)}@example.com`,
+      originHeader: "null",
+    });
+    expect(token.length).toBeGreaterThan(10);
+  });
+
+  it("rejects a cross-site authorize post with a sign-in page", async () => {
+    const response = await SELF.fetch(`${LOCAL}/authorize`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/x-www-form-urlencoded",
+        origin: "https://evil.example",
+        host: new URL(LOCAL).host,
+      },
+      body: "decision=approve&handle=not-a-consent&csrf=not-the-token",
+    });
+    expect(response.status).toBe(403);
+    expect(response.headers.get("content-type")).toContain("text/html");
+    const html = await response.text();
+    expect(html).toContain("Go back");
+    expect(html).toContain("another site");
+    expect(html).not.toContain("Cross-origin submission was rejected.");
   });
 });

@@ -4,6 +4,7 @@ import {
   getOAuthApi,
   type OAuthHelpers,
 } from "@cloudflare/workers-oauth-provider";
+import { base64url, sha256Hex } from "./crypto";
 import { acceptSignup } from "./clicks";
 import { ClickError } from "./types";
 import { escapeHtml, htmlResponse, page } from "./pages";
@@ -13,9 +14,45 @@ function oauth(request: Request, env: Env): OAuthHelpers {
   return getOAuthApi(providerOptions(new URL(request.url).origin), env);
 }
 
+const CSRF_TTL_SECONDS = 600;
+
 function sameOrigin(request: Request): boolean {
   const origin = request.headers.get("origin");
-  return !origin || origin === new URL(request.url).origin;
+  // Safari sends the literal "null" after a cross-site redirect into a page
+  // with Referrer-Policy: no-referrer. A missing Origin is the same case.
+  return !origin || origin === "null" || origin === new URL(request.url).origin;
+}
+
+async function csrfCookieName(handle: string): Promise<string> {
+  const hash = await sha256Hex(handle);
+  return `__Host-click-${hash.slice(0, 32)}`;
+}
+
+function csrfCookie(name: string, token: string): string {
+  return `${name}=${token}; Path=/; Secure; HttpOnly; SameSite=Lax; Max-Age=${CSRF_TTL_SECONDS}`;
+}
+
+function clearCsrfCookie(name: string): string {
+  return `${name}=; Path=/; Secure; HttpOnly; SameSite=Lax; Max-Age=0`;
+}
+
+function readCookie(request: Request, name: string): string | null {
+  const header = request.headers.get("cookie");
+  if (!header) return null;
+  for (const part of header.split(";")) {
+    const separator = part.indexOf("=");
+    if (separator === -1) continue;
+    if (part.slice(0, separator).trim() === name) return part.slice(separator + 1).trim();
+  }
+  return null;
+}
+
+function tokensMatch(left: string, right: string): boolean {
+  const encoder = new TextEncoder();
+  const a = encoder.encode(left);
+  const b = encoder.encode(right);
+  if (a.byteLength === 0 || a.byteLength !== b.byteLength) return false;
+  return crypto.subtle.timingSafeEqual(a, b);
 }
 
 export async function handleAuthorize(request: Request, env: Env): Promise<Response> {
@@ -23,12 +60,12 @@ export async function handleAuthorize(request: Request, env: Env): Promise<Respo
   try {
     if (request.method === "GET") return await showConsent(request, api);
     if (request.method === "POST") return await submitConsent(request, env, api);
-    return new Response("Method not allowed", { status: 405, headers: { allow: "GET, POST" } });
+    return signInProblem("Use the sign-in form.", 405, { allow: "GET, POST" });
   } catch (error) {
     if (error instanceof AuthorizationError && error.redirectTo) return Response.redirect(error.redirectTo, 302);
     if (error instanceof AuthorizationError || error instanceof CimdFetchError) {
       const message = error instanceof AuthorizationError ? error.description : "This app could not be verified.";
-      return htmlResponse(page("Click", `<h1>Click</h1><p class="error">${escapeHtml(message)}</p>`), 400);
+      return htmlResponse(page("Click", `<h1>Sign-in stopped</h1><p class="error">${escapeHtml(message)}</p><p><button type="button" onclick="history.back()">Go back</button></p><p class="muted"><a href="/">Click home</a></p>`), 400);
     }
     throw error;
   }
@@ -38,6 +75,8 @@ async function showConsent(request: Request, api: OAuthHelpers): Promise<Respons
   const authRequest = await api.parseAuthRequest(request);
   const details = await api.describeConsent(authRequest);
   const consent = await api.beginConsent(authRequest);
+  const csrf = base64url(crypto.getRandomValues(new Uint8Array(32)));
+  const csrfName = await csrfCookieName(consent.handle);
   const scopes = details.scope.length > 0 ? details.scope : ["click"];
   const domain = details.clientDomain
     ? `<p>Published by <strong>${escapeHtml(details.clientDomain)}</strong>.</p>`
@@ -55,6 +94,7 @@ async function showConsent(request: Request, api: OAuthHelpers): Promise<Respons
     ${loopback}
     <form method="post">
       <input type="hidden" name="handle" value="${escapeHtml(consent.handle)}">
+      <input type="hidden" name="csrf" value="${escapeHtml(csrf)}">
       ${scopeFields}
       <label><input type="radio" name="mode" value="create" checked> Create a click</label>
       <label><input type="radio" name="mode" value="join"> Join with a click key or invite</label>
@@ -70,17 +110,26 @@ async function showConsent(request: Request, api: OAuthHelpers): Promise<Respons
       </p>
     </form>
     <p class="muted">Creating a click shows its key once after you return to the agent. Call show_key later to see it again. Agents without OAuth can POST /api/clicks.</p>`;
-  return htmlResponse(page("Join Click", body), 200, consent.headers);
+  const headers = new Headers(consent.headers);
+  headers.append("Set-Cookie", csrfCookie(csrfName, csrf));
+  return htmlResponse(page("Join Click", body), 200, headers);
 }
 
 async function submitConsent(request: Request, env: Env, api: OAuthHelpers): Promise<Response> {
-  if (!sameOrigin(request)) return new Response("Cross-origin submission was rejected.", { status: 403 });
+  if (!sameOrigin(request)) return signInProblem("This sign-in was submitted from another site. Go back and use the Click form.");
   const length = Number(request.headers.get("content-length") ?? "0");
-  if (length > 32_768) return new Response("Payload too large", { status: 413 });
+  if (length > 32_768) return signInProblem("That form was too large.", 413);
   const form = await request.formData();
   const handle = String(form.get("handle") ?? "");
+  const csrfName = await csrfCookieName(handle);
+  const presented = String(form.get("csrf") ?? "");
+  const stored = readCookie(request, csrfName) ?? "";
+  if (!tokensMatch(presented, stored)) {
+    return signInProblem("This sign-in page expired. Go back and submit the form again.");
+  }
   if (form.get("decision") !== "approve") {
     const denied = await api.denyConsent(request, handle);
+    denied.headers.append("Set-Cookie", clearCsrfCookie(csrfName));
     return new Response(null, { status: 302, headers: denied.headers });
   }
   const mode = String(form.get("mode") ?? "create");
@@ -96,10 +145,10 @@ async function submitConsent(request: Request, env: Env, api: OAuthHelpers): Pro
         : { clickKey: key, label });
   } catch (error) {
     const message = error instanceof ClickError ? error.message : "Could not open that click.";
-    return retry(handle, message);
+    return retry(handle, presented, message);
   }
   const scope = form.getAll("scope").map(String).filter((item) => item === "click" || item === "offline_access");
-  if (!scope.includes("click")) return retry(handle, "Click access has to stay selected.");
+  if (!scope.includes("click")) return retry(handle, presented, "Click access has to stay selected.");
   const approved = await api.approveConsent(request, handle, { scope });
   const { redirectTo } = await api.completeAuthorization({
     request: approved.request,
@@ -108,17 +157,19 @@ async function submitConsent(request: Request, env: Env, api: OAuthHelpers): Pro
     scope: approved.request.scope,
     props: { principalId: principal.principalId, clickId: principal.clickId, role: principal.role },
   });
+  approved.headers.append("Set-Cookie", clearCsrfCookie(csrfName));
   approved.headers.set("location", redirectTo);
   approved.headers.set("cache-control", "no-store");
   approved.headers.set("referrer-policy", "no-referrer");
   return new Response(null, { status: 302, headers: approved.headers });
 }
 
-function retry(handle: string, message: string): Response {
+function retry(handle: string, csrf: string, message: string): Response {
   const body = `<h1>Join Click</h1>
     <p class="error">${escapeHtml(message)}</p>
     <form method="post">
       <input type="hidden" name="handle" value="${escapeHtml(handle)}">
+      <input type="hidden" name="csrf" value="${escapeHtml(csrf)}">
       <input type="hidden" name="scope" value="click">
       <label><input type="radio" name="mode" value="create" checked> Create a click</label>
       <label><input type="radio" name="mode" value="join"> Join with a click key or invite</label>
@@ -127,6 +178,15 @@ function retry(handle: string, message: string): Response {
       <label for="key">Click key or invite</label>
       <input id="key" name="key" type="password">
       <p><button name="decision" value="approve">Allow</button></p>
-    </form>`;
-  return htmlResponse(page("Join Click", body), 200);
+    </form>
+    <p class="muted"><button type="button" onclick="history.back()">Go back</button> <a href="/">Click home</a></p>`;
+  return htmlResponse(page("Join Click", body), 400);
+}
+
+function signInProblem(message: string, status = 403, extra?: HeadersInit): Response {
+  const body = `<h1>Sign-in stopped</h1>
+    <p class="error">${escapeHtml(message)}</p>
+    <p><button type="button" onclick="history.back()">Go back</button></p>
+    <p class="muted"><a href="/">Click home</a>. Start the connection again from your agent if the form is gone.</p>`;
+  return htmlResponse(page("Sign-in stopped", body), status, extra ? new Headers(extra) : undefined);
 }

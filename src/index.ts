@@ -11,6 +11,9 @@ async function withAgentAuth(response: Response, origin: string): Promise<Respon
   metadata.agent_auth = agentAuthMetadata(origin);
   const listed = Array.isArray(metadata.protected_resources) ? metadata.protected_resources.map(String) : [];
   metadata.protected_resources = [...new Set([origin, `${origin}/mcp`, ...listed])];
+  const host = new URL(origin).hostname;
+  const domains = Array.isArray(metadata.poppy_domains) ? metadata.poppy_domains.map(String) : [];
+  metadata.poppy_domains = [...new Set([host, ...domains])];
   const headers = new Headers(response.headers);
   headers.set("content-type", "application/json; charset=utf-8");
   return new Response(JSON.stringify(metadata), { status: response.status, headers });
