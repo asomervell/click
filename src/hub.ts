@@ -29,6 +29,17 @@ type SendInput = {
   to?: string;
   topic?: string;
   broadcast?: boolean;
+  reply_to?: string;
+};
+
+/** What a caller may know about one message it can see, for routing a reply. */
+export type LocatedMessage = {
+  event_id: string;
+  kind: "dm" | "topic" | "broadcast";
+  topic: string | null;
+  from: string | null;
+  to: string | null;
+  mine: boolean;
 };
 
 export type WakeSummary = {
@@ -142,6 +153,7 @@ export class ClickHub extends DurableObject<Env> {
     this.addColumn("click_meta", "name", "TEXT");
     this.addColumn("invites", "expires_at", "INTEGER");
     this.addColumn("invites", "revoked_at", "INTEGER");
+    this.addColumn("events", "reply_to", "TEXT");
   }
 
   private addColumn(table: string, column: string, type: string): void {
@@ -351,6 +363,7 @@ export class ClickHub extends DurableObject<Env> {
       .one().n;
     if (recent >= 30) throw new ClickError("Too many messages in the last minute. Wait and try again.");
     const text = requireText(input.text);
+    const replyTo = input.reply_to ? this.locateRow(from.id, input.reply_to)?.event_id ?? null : null;
     const chosen = [input.to?.trim(), input.topic?.trim(), input.broadcast ? "broadcast" : ""].filter(Boolean);
     if (chosen.length !== 1) throw new ClickError("Set exactly one of to, topic, or broadcast.");
     const now = Date.now();
@@ -381,7 +394,7 @@ export class ClickHub extends DurableObject<Env> {
 
     this.ctx.storage.transactionSync(() => {
       this.ctx.storage.sql.exec(
-        `INSERT INTO events (id, kind, topic, from_agent_id, to_agent_id, text, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO events (id, kind, topic, from_agent_id, to_agent_id, text, created_at, reply_to) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
         eventId,
         kind,
         topic,
@@ -389,6 +402,7 @@ export class ClickHub extends DurableObject<Env> {
         toAgentId,
         text,
         now,
+        replyTo,
       );
       for (const recipient of recipients) {
         const wake = Boolean(recipient.webhook_url && recipient.webhook_key);
@@ -408,7 +422,14 @@ export class ClickHub extends DurableObject<Env> {
     return { event_id: eventId, kind, recipients: recipients.map((agent) => agent.handle) };
   }
 
-  async inbox(props: ClickProps, limit: number | undefined): Promise<{
+  /**
+   * Unacked deliveries. Oldest first by default (the single-click order).
+   * order "desc" is newest first; with older_than it pages past a (created_at, id) cursor.
+   */
+  async inbox(props: ClickProps, limit: number | undefined, options: {
+    order?: "asc" | "desc";
+    olderThan?: { t: number; id: string } | null;
+  } = {}): Promise<{
     messages: Array<{
       id: string;
       event_id: string;
@@ -417,9 +438,12 @@ export class ClickHub extends DurableObject<Env> {
       topic: string | null;
       text: string;
       created_at: number;
+      reply_to: string | null;
     }>;
   }> {
     const agent = this.requireAgent(props.principalId);
+    const desc = options.order === "desc";
+    const cursor = desc ? options.olderThan ?? null : null;
     const messages = this.ctx.storage.sql
       .exec<{
         id: string;
@@ -429,15 +453,21 @@ export class ClickHub extends DurableObject<Env> {
         topic: string | null;
         text: string;
         created_at: number;
+        reply_to: string | null;
       }>(
-        `SELECT d.id, d.event_id, COALESCE(s.handle, '(left)') AS from_handle, e.kind, e.topic, e.text, e.created_at
+        `SELECT d.id, d.event_id, COALESCE(s.handle, '(left)') AS from_handle, e.kind, e.topic, e.text, e.created_at, e.reply_to
          FROM deliveries d
          JOIN events e ON e.id = d.event_id
          LEFT JOIN agents s ON s.id = e.from_agent_id
          WHERE d.agent_id = ? AND d.acked_at IS NULL
-         ORDER BY e.created_at ASC
+           AND (? IS NULL OR e.created_at < ? OR (e.created_at = ? AND d.id < ?))
+         ORDER BY ${desc ? "e.created_at DESC, d.id DESC" : "e.created_at ASC, d.id ASC"}
          LIMIT ?`,
         agent.id,
+        cursor?.t ?? null,
+        cursor?.t ?? null,
+        cursor?.t ?? null,
+        cursor?.id ?? "",
         clampLimit(limit),
       )
       .toArray()
@@ -449,8 +479,71 @@ export class ClickHub extends DurableObject<Env> {
         topic: row.topic,
         text: row.text,
         created_at: row.created_at,
+        reply_to: row.reply_to,
       }));
     return { messages };
+  }
+
+  /** Unacked count, for "has more" across clicks. Zero when no agent is registered here. */
+  async unreadCount(props: ClickProps): Promise<number> {
+    const agent = this.agentByPrincipal(props.principalId);
+    if (!agent) return 0;
+    return this.ctx.storage.sql
+      .exec<{ n: number }>(`SELECT COUNT(*) AS n FROM deliveries WHERE agent_id = ? AND acked_at IS NULL`, agent.id)
+      .one().n;
+  }
+
+  /** True when this connection has an agent registered here. */
+  async isRegistered(props: ClickProps): Promise<boolean> {
+    return Boolean(this.agentByPrincipal(props.principalId));
+  }
+
+  /** Whether a handle or a subscribed topic exists here, for routing a new send. */
+  async hasTarget(input: { to?: string; topic?: string }): Promise<boolean> {
+    if (input.to?.trim()) return Boolean(this.agentByHandle(input.to.trim().toLowerCase()));
+    if (input.topic?.trim()) {
+      return this.ctx.storage.sql
+        .exec<{ n: number }>(`SELECT COUNT(*) AS n FROM subscriptions WHERE topic = ?`, input.topic.trim().toLowerCase())
+        .one().n > 0;
+    }
+    return false;
+  }
+
+  /** Find a message by delivery id or event id, if this caller can see it. */
+  async locate(props: ClickProps, id: string): Promise<LocatedMessage | null> {
+    const agent = this.agentByPrincipal(props.principalId);
+    if (!agent) return null;
+    return this.locateRow(agent.id, id);
+  }
+
+  private locateRow(agentId: string, rawId: string): LocatedMessage | null {
+    const id = rawId.trim();
+    if (!id) return null;
+    const row = this.ctx.storage.sql
+      .exec<{ event_id: string; kind: "dm" | "topic" | "broadcast"; topic: string | null; from_agent_id: string; from_handle: string | null; to_handle: string | null }>(
+        `SELECT e.id AS event_id, e.kind, e.topic, e.from_agent_id, s.handle AS from_handle, t.handle AS to_handle
+         FROM events e
+         LEFT JOIN agents s ON s.id = e.from_agent_id
+         LEFT JOIN agents t ON t.id = e.to_agent_id
+         WHERE (e.id = ? OR e.id = (SELECT event_id FROM deliveries WHERE id = ? AND agent_id = ?))
+           AND (e.from_agent_id = ? OR e.id IN (SELECT event_id FROM deliveries WHERE agent_id = ?))
+         LIMIT 1`,
+        id,
+        id,
+        agentId,
+        agentId,
+        agentId,
+      )
+      .toArray()[0];
+    if (!row) return null;
+    return {
+      event_id: row.event_id,
+      kind: row.kind,
+      topic: row.topic,
+      from: row.from_handle,
+      to: row.to_handle,
+      mine: row.from_agent_id === agentId,
+    };
   }
 
   async ack(props: ClickProps, ids: string[]): Promise<{ acked: string[]; missing: string[] }> {
@@ -524,6 +617,7 @@ export class ClickHub extends DurableObject<Env> {
     topic?: string;
     with?: string;
     before?: number;
+    before_id?: string;
     limit?: number;
   }): Promise<{
     events: Array<{
@@ -534,11 +628,13 @@ export class ClickHub extends DurableObject<Env> {
       to: string | null;
       text: string;
       created_at: number;
+      reply_to: string | null;
     }>;
   }> {
     const agent = this.requireAgent(props.principalId);
     const limit = clampLimit(input.limit);
     const before = input.before ?? Number.MAX_SAFE_INTEGER;
+    const beforeId = input.before_id ?? "";
     type HistoryRow = {
       id: string;
       kind: string;
@@ -547,20 +643,23 @@ export class ClickHub extends DurableObject<Env> {
       to_handle: string | null;
       text: string;
       created_at: number;
+      reply_to: string | null;
     };
     let rows: HistoryRow[];
     if (input.topic?.trim()) {
       const topic = requireHandle(input.topic, "topic");
       rows = this.ctx.storage.sql
         .exec<HistoryRow>(
-          `SELECT e.id, e.kind, e.topic, COALESCE(s.handle, '(left)') AS from_handle, t.handle AS to_handle, e.text, e.created_at
+          `SELECT e.id, e.kind, e.topic, COALESCE(s.handle, '(left)') AS from_handle, t.handle AS to_handle, e.text, e.created_at, e.reply_to
            FROM events e
            LEFT JOIN agents s ON s.id = e.from_agent_id
            LEFT JOIN agents t ON t.id = e.to_agent_id
-           WHERE e.kind = 'topic' AND e.topic = ? AND e.created_at < ?
-           ORDER BY e.created_at DESC LIMIT ?`,
+           WHERE e.kind = 'topic' AND e.topic = ? AND (e.created_at < ? OR (e.created_at = ? AND e.id < ?))
+           ORDER BY e.created_at DESC, e.id DESC LIMIT ?`,
           topic,
           before,
+          before,
+          beforeId,
           limit,
         )
         .toArray();
@@ -569,14 +668,16 @@ export class ClickHub extends DurableObject<Env> {
       if (!other) throw new ClickError(`No agent named ${input.with.trim().toLowerCase()}.`);
       rows = this.ctx.storage.sql
         .exec<HistoryRow>(
-          `SELECT e.id, e.kind, e.topic, COALESCE(s.handle, '(left)') AS from_handle, t.handle AS to_handle, e.text, e.created_at
+          `SELECT e.id, e.kind, e.topic, COALESCE(s.handle, '(left)') AS from_handle, t.handle AS to_handle, e.text, e.created_at, e.reply_to
            FROM events e
            LEFT JOIN agents s ON s.id = e.from_agent_id
            LEFT JOIN agents t ON t.id = e.to_agent_id
-           WHERE e.kind = 'dm' AND e.created_at < ?
+           WHERE e.kind = 'dm' AND (e.created_at < ? OR (e.created_at = ? AND e.id < ?))
              AND ((e.from_agent_id = ? AND e.to_agent_id = ?) OR (e.from_agent_id = ? AND e.to_agent_id = ?))
-           ORDER BY e.created_at DESC LIMIT ?`,
+           ORDER BY e.created_at DESC, e.id DESC LIMIT ?`,
           before,
+          before,
+          beforeId,
           agent.id,
           other.id,
           other.id,
@@ -587,16 +688,18 @@ export class ClickHub extends DurableObject<Env> {
     } else {
       rows = this.ctx.storage.sql
         .exec<HistoryRow>(
-          `SELECT e.id, e.kind, e.topic, COALESCE(s.handle, '(left)') AS from_handle, t.handle AS to_handle, e.text, e.created_at
+          `SELECT e.id, e.kind, e.topic, COALESCE(s.handle, '(left)') AS from_handle, t.handle AS to_handle, e.text, e.created_at, e.reply_to
            FROM events e
            LEFT JOIN agents s ON s.id = e.from_agent_id
            LEFT JOIN agents t ON t.id = e.to_agent_id
-           WHERE e.created_at < ? AND (
+           WHERE (e.created_at < ? OR (e.created_at = ? AND e.id < ?)) AND (
              e.from_agent_id = ?
              OR e.id IN (SELECT event_id FROM deliveries WHERE agent_id = ?)
            )
-           ORDER BY e.created_at DESC LIMIT ?`,
+           ORDER BY e.created_at DESC, e.id DESC LIMIT ?`,
           before,
+          before,
+          beforeId,
           agent.id,
           agent.id,
           limit,
@@ -612,6 +715,7 @@ export class ClickHub extends DurableObject<Env> {
         to: row.to_handle,
         text: row.text,
         created_at: row.created_at,
+        reply_to: row.reply_to,
       })),
     };
   }
