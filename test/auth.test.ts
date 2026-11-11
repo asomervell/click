@@ -142,11 +142,12 @@ describe("auth", () => {
     const missing = await SELF.fetch(`${LOCAL}/missing-page`, { headers: { accept: "text/markdown" } });
     expect(missing.status).toBe(404);
     expect(missing.headers.get("content-type")).toContain("text/markdown");
-    const openapi = await (await SELF.fetch(`${LOCAL}/openapi.json`)).json() as { paths: Record<string, { get?: { responses: Record<string, unknown> }; post?: { responses: Record<string, unknown> }; delete?: { responses: Record<string, unknown> } }> };
+    const openapi = await (await SELF.fetch(`${LOCAL}/openapi.json`)).json() as { paths: Record<string, { get?: { responses: Record<string, unknown> }; post?: { responses: Record<string, unknown> }; patch?: { responses: Record<string, unknown> }; delete?: { responses: Record<string, unknown> } }> };
     expect(openapi.paths["/api/v1/inbox"]?.get?.responses["200"]).toBeTruthy();
     expect(openapi.paths["/api/v1/inbox"]?.get?.responses["429"]).toBeTruthy();
     expect(openapi.paths["/api/v1/tokens"]?.post?.responses["201"]).toBeTruthy();
     expect(openapi.paths["/api/v1/tokens/{token_id}"]?.delete?.responses["200"]).toBeTruthy();
+    expect(openapi.paths["/api/v1/me"]?.patch?.responses["200"]).toBeTruthy();
     const created = await SELF.fetch(`${LOCAL}/api/v1/clicks`, {
       method: "POST",
       headers: { "content-type": "application/json", host: new URL(LOCAL).host },
@@ -236,6 +237,46 @@ describe("auth", () => {
     expect((revokedB.body as { revoked: boolean }).revoked).toBe(true);
     const denied = await api(LOCAL, tokenA.token, "/api/v1/me");
     expect(denied.status).toBe(401);
+  });
+
+  it("lets a minted agent set a webhook by re-registering or patching me", async () => {
+    const created = await createClick();
+    const name = handle("chief");
+    const minted = await api(LOCAL, created.click_key, "/api/v1/tokens", {
+      method: "POST",
+      body: { handle: name, name: "Chief" },
+    });
+    expect(minted.status).toBe(201);
+    const token = (minted.body as { token: string }).token;
+
+    const registered = await api(LOCAL, token, "/api/v1/agents", {
+      method: "POST",
+      body: { handle: name, webhook_url: "https://hooks.test/ring", webhook_key: "super-secret-key" },
+    });
+    expect(registered.status).toBe(200);
+    const profile = registered.body as { agent: { handle: string; name: string; webhook_url: string | null; webhook_configured: boolean } };
+    expect(profile.agent.handle).toBe(name);
+    expect(profile.agent.name).toBe("Chief");
+    expect(profile.agent.webhook_configured).toBe(true);
+    expect(profile.agent.webhook_url).toBe("https://hooks.test/ring");
+
+    const patched = await api(LOCAL, token, "/api/v1/me", {
+      method: "PATCH",
+      body: { webhook_url: "https://hooks.test/other", webhook_key: "another-secret-key" },
+    });
+    expect(patched.status).toBe(200);
+    const updated = patched.body as { agent: { name: string; webhook_url: string | null; webhook_configured: boolean } };
+    expect(updated.agent.name).toBe("Chief");
+    expect(updated.agent.webhook_configured).toBe(true);
+    expect(updated.agent.webhook_url).toBe("https://hooks.test/other");
+
+    const conflict = await api(LOCAL, token, "/api/v1/agents", {
+      method: "POST",
+      body: { handle: handle("other") },
+    });
+    expect(conflict.status).toBe(400);
+    expect((conflict.body as { detail: string; code: string }).code).toBe("invalid");
+    expect((conflict.body as { detail: string }).detail).toMatch(/already registered/i);
   });
 
   it("rejects a cross-site authorize post with a sign-in page", async () => {
