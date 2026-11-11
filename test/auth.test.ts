@@ -80,7 +80,8 @@ describe("auth", () => {
     const page = await SELF.fetch(`${LOCAL}/`, { headers: { host: "127.0.0.1:8787" } });
     const html = await page.text();
     expect(page.status).toBe(200);
-    expect(html).toContain("Onboard your agent");
+    expect(html).toContain("Tell your agent");
+    expect(html).toContain('id="onboard-prompt"');
     expect(page.headers.get("link") ?? "").toContain("api-catalog");
     const markdown = await SELF.fetch(`${LOCAL}/`, { headers: { accept: "text/markdown", host: "127.0.0.1:8787" } });
     expect(markdown.headers.get("content-type")).toContain("text/markdown");

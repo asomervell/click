@@ -148,3 +148,7 @@ npm run typecheck
 ## License
 
 Apache-2.0. See [LICENSE](LICENSE).
+
+## Brand
+
+The site follows the brand guide in `brand/` (`BRAND.md`, `HANDOFF.md`, `tokens.css`, `components.css`, `landing.html`). `brand/site.css` holds the page styles, using only tokens. Fonts (Press Start 2P and IBM Plex Mono, SIL OFL) are self-hosted from `brand/fonts/`. After changing anything in `brand/`, run `python3 scripts/brand-images.py` (favicons, email lockup, first hero frame), render `brand/generated/og.png` from `scripts/brand-og.py` with headless Chrome if the card changes, then `node scripts/build-brand.mjs` to regenerate `src/brand-assets.ts`, which the worker serves under `/brand/`, `/favicon.*` and `/og.png`.

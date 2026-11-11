@@ -1,0 +1,99 @@
+/* Click site styles. Every colour, space, border, shadow and font comes from tokens.css. */
+html{background:var(--ground)}
+body{margin:0}
+.ck-root a{color:var(--ink)}
+.ck-sr{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}
+.ck-skip{position:absolute;left:var(--space-3);top:-100px;background:var(--ground);color:var(--ink);border:var(--border-pixel) solid var(--ink);padding:var(--space-2) var(--space-3);z-index:2}
+.ck-skip:focus{top:var(--space-3)}
+.ck-root a:focus-visible,.ck-root button:focus-visible,.ck-root input:focus-visible{outline:var(--border-pixel) solid var(--magenta-text);outline-offset:3px}
+
+/* Shared nav: the Buckle and CLICK, with text links. */
+.ck-nav{display:flex;justify-content:space-between;align-items:center;gap:var(--space-3);flex-wrap:wrap}
+.ck-brand{display:flex;align-items:center;gap:var(--space-3);font-family:var(--font-display);font-size:16px;color:var(--ink);text-decoration:none}
+.ck-root a.ck-brand{color:var(--ink)}
+.ck-brand svg{color:var(--magenta);flex:none}
+.ck-nav .links{display:flex;align-items:center;gap:var(--space-4)}
+.ck-nav .links a{color:var(--ink);text-decoration:none}
+.ck-nav .links a:hover{color:var(--magenta-text)}
+
+/* Landing, as landing.html. */
+.ck-landing .hero{position:relative;min-height:680px;background:var(--ground);color:var(--ink);overflow:hidden}
+.ck-landing .hero .scene{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;object-position:60% 100%;image-rendering:pixelated}
+.ck-landing .in{position:relative;max-width:1040px;margin:0 auto;padding:var(--space-4) var(--space-5)}
+.ck-landing .copy{max-width:500px;padding-top:var(--space-7)}
+.ck-landing h1{font-family:var(--font-display);font-weight:400;font-size:36px;line-height:1.3;margin:0 0 var(--space-4);text-transform:uppercase}
+.ck-landing .sub{font-size:18px;line-height:28px;margin:0 0 var(--space-5);max-width:26em}
+.ck-landing .cmd{border:var(--border-pixel) solid var(--ink);background:var(--ground);max-width:560px;margin:0}
+.ck-landing .cmd .tabs{display:flex;border-bottom:var(--border-pixel) solid var(--ink)}
+.ck-landing .cmd .tabs span{padding:var(--space-2) var(--space-3);color:var(--muted)}
+.ck-landing .cmd .tabs .on{background:var(--ink);color:var(--ground)}
+.ck-landing .cmd .line{display:flex;justify-content:space-between;align-items:flex-start;gap:var(--space-3);padding:var(--space-3);font:500 13px/22px var(--font-mono)}
+.ck-landing .cmd .line b{color:var(--magenta-text);font-weight:500}
+.ck-landing .cmd .cp{flex:none;background:var(--ground);color:var(--muted);border:0;padding:0;cursor:pointer;line-height:22px}
+.ck-landing .cmd .cp:hover,.ck-landing .cmd .cp.is-done{color:var(--ink)}
+.ck-landing .steps{max-width:1040px;margin:0 auto;padding:var(--space-6) var(--space-5);display:grid;grid-template-columns:repeat(3,1fr);gap:var(--space-5)}
+.ck-landing .steps h2{font-family:var(--font-display);font-weight:400;font-size:16px;line-height:1.5;margin:0 0 var(--space-2);text-transform:uppercase}
+.ck-landing .steps p{margin:0;color:var(--muted)}
+.ck-landing .facts{border-top:var(--border-pixel) dotted var(--line)}
+.ck-landing .facts h2{color:var(--magenta-text)}
+.ck-foot{max-width:1040px;margin:0 auto;padding:var(--space-4) var(--space-5) var(--space-6);display:flex;flex-wrap:wrap;gap:var(--space-4);border-top:var(--border-pixel) dotted var(--line)}
+.ck-foot a{color:var(--muted);text-decoration:none}
+.ck-foot a:hover{color:var(--ink)}
+
+/* Below 700px: rows stack and the copy sits above the fire. */
+@media (max-width:700px){
+  .ck-landing .hero{min-height:0;display:flex;flex-direction:column}
+  .ck-landing .hero .scene{position:static;order:2;height:auto;aspect-ratio:320/200}
+  .ck-landing .in{padding:var(--space-3)}
+  .ck-landing .copy{padding-top:var(--space-6);padding-bottom:var(--space-4)}
+  .ck-landing h1{font-size:24px}
+  .ck-landing .sub{font-size:15px;line-height:24px}
+  .ck-landing .steps{grid-template-columns:1fr;padding:var(--space-5) var(--space-3);gap:var(--space-4)}
+  .ck-foot{padding:var(--space-4) var(--space-3) var(--space-5)}
+}
+
+/* Sign-in, consent, verify, invite, key and error pages. */
+.ck-page .frame{max-width:640px;margin:0 auto;padding:var(--space-4) var(--space-4) var(--space-7)}
+.ck-page main{margin-top:var(--space-6);border:var(--border-pixel) solid var(--ink);box-shadow:var(--shadow-magenta);padding:var(--space-5);background:var(--ground)}
+.ck-page h1{font-family:var(--font-display);font-weight:400;font-size:20px;line-height:1.4;text-transform:uppercase;margin:0 0 var(--space-4)}
+.ck-page h2{font-family:var(--font-display);font-weight:400;font-size:12px;line-height:1.6;text-transform:uppercase;margin:var(--space-5) 0 var(--space-2)}
+.ck-page p{margin:0 0 var(--space-3)}
+.ck-page a{color:var(--magenta-text)}
+.ck-page form{display:grid;gap:var(--space-2);margin:var(--space-4) 0}
+.ck-page label{display:block;margin-top:var(--space-2)}
+.ck-page label:has(input[type=radio]),.ck-page label:has(input[type=checkbox]){display:flex;align-items:center;gap:var(--space-2);margin-top:0}
+.ck-page input[type=radio],.ck-page input[type=checkbox]{accent-color:var(--magenta);width:16px;height:16px;margin:0}
+.ck-page input:not([type=radio]):not([type=checkbox]):not([type=hidden]){font:500 13px/22px var(--font-mono);padding:10px var(--space-3);background:var(--ground);color:var(--ink);border:var(--border-pixel) solid var(--ink);border-radius:var(--radius-0);width:100%;box-sizing:border-box}
+.ck-page input:not([type=radio]):not([type=checkbox]):focus{outline:none;border-color:var(--cyan-text);box-shadow:var(--shadow-cyan)}
+.ck-page form p{margin:var(--space-3) 0 0;display:flex;flex-wrap:wrap;gap:var(--space-3)}
+.ck-page button{display:inline-flex;align-items:center;gap:var(--space-2);font-family:var(--font-display);font-size:10px;line-height:1;letter-spacing:.5px;text-transform:uppercase;padding:14px var(--space-3);border:var(--border-pixel) solid var(--ink);border-radius:var(--radius-0);background:var(--cyan);color:var(--on-cyan);box-shadow:var(--shadow-ink);cursor:pointer}
+.ck-page button:hover{transform:translate(2px,2px);box-shadow:2px 2px 0 0 var(--ink)}
+.ck-page button:active{transform:translate(4px,4px);box-shadow:none}
+.ck-page button.secondary,.ck-page button[type=button]{background:var(--ground);color:var(--ink)}
+.ck-page .error{color:var(--magenta-text);border-left:var(--border-pixel) solid var(--magenta);padding-left:var(--space-3)}
+.ck-page .muted{color:var(--muted)}
+.ck-page .muted a{color:var(--muted)}
+.ck-page .secret{font:500 15px/24px var(--font-mono);color:var(--cyan-text);letter-spacing:1px;border:var(--border-pixel) dashed var(--cyan-text);padding:var(--space-3);word-break:break-all}
+.ck-page code{font:500 13px/22px var(--font-mono);color:var(--magenta-text)}
+.ck-page strong{font-weight:500;color:var(--ink)}
+
+/* Docs and plain text pages. */
+.ck-doc .frame{max-width:760px;margin:0 auto;padding:var(--space-4) var(--space-4) var(--space-7)}
+.ck-doc main{margin-top:var(--space-6)}
+.ck-doc h1{font-family:var(--font-display);font-weight:400;font-size:24px;line-height:1.4;text-transform:uppercase;margin:0 0 var(--space-4)}
+.ck-doc h2{font-family:var(--font-display);font-weight:400;font-size:14px;line-height:1.6;text-transform:uppercase;margin:var(--space-6) 0 var(--space-3);color:var(--magenta-text)}
+.ck-doc h3{font-family:var(--font-display);font-weight:400;font-size:10px;line-height:1.6;text-transform:uppercase;margin:var(--space-5) 0 var(--space-2)}
+.ck-doc p,.ck-doc li{color:var(--ink)}
+.ck-doc a{color:var(--magenta-text)}
+.ck-doc .toc{display:flex;flex-wrap:wrap;gap:var(--space-2) var(--space-4);margin:var(--space-4) 0;padding:var(--space-3) 0;border-top:var(--border-pixel) dotted var(--line);border-bottom:var(--border-pixel) dotted var(--line)}
+.ck-doc .toc a{color:var(--ink);text-decoration:none}
+.ck-doc .toc a:hover{color:var(--magenta-text)}
+.ck-doc code{font:500 13px/22px var(--font-mono);color:var(--magenta-text)}
+.ck-doc pre{border:var(--border-pixel) solid var(--ink);background:var(--surface);margin:0 0 var(--space-3);padding:var(--space-3);overflow-x:auto}
+.ck-doc pre code{color:var(--ink);white-space:pre}
+.ck-doc table{border-collapse:collapse;width:100%;margin:0 0 var(--space-3)}
+.ck-doc th,.ck-doc td{border:var(--border-pixel) solid var(--line);padding:var(--space-2);text-align:left;vertical-align:top}
+.ck-doc th{font-family:var(--font-display);font-size:10px;font-weight:400;text-transform:uppercase}
+.ck-doc footer{margin-top:var(--space-6);padding-top:var(--space-3);border-top:var(--border-pixel) dotted var(--line);display:flex;flex-wrap:wrap;gap:var(--space-4)}
+.ck-doc footer a{color:var(--muted);text-decoration:none}
+@media (max-width:700px){.ck-page main{padding:var(--space-4)}.ck-doc h1{font-size:18px}}

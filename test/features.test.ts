@@ -115,7 +115,10 @@ describe("email verification", () => {
     const named = verificationEmail({ code: "451683", clickName: "zz email test" });
     expect(named.subject).toBe("Click code 451683");
     expect(named.text).toBe("The verification code for zz email test is\n\n451683\n\nIf this was not you, ignore this email. No click is created without the code.");
-    expect(named.html).toBe('<p>The verification code for zz email test is</p><p style="font-size:28px;font-weight:600;letter-spacing:4px">451683</p><p>If this was not you, ignore this email. No click is created without the code.</p>');
+    expect(named.html).toContain(">The verification code for zz email test is</p>");
+    expect(named.html).toContain(">451683</p>");
+    expect(named.html).toContain(">If this was not you, ignore this email. No click is created without the code.</p>");
+    expect(named.html).toContain('src="https://clickmcp.com/brand/lockup-magenta.png"');
     const unnamed = verificationEmail({ code: "000123", clickName: null });
     expect(unnamed.text.startsWith("The verification code for your click is\n")).toBe(true);
     const hostile = verificationEmail({ code: "111111", clickName: "<b>\"x\" & y</b>" });

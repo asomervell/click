@@ -4,6 +4,7 @@ import { handleSite } from "./site";
 import { handleHttpApi } from "./http-api";
 import { handleKeys } from "./keys";
 import { mcpResponse } from "./mcp";
+import { htmlResponse, page } from "./pages";
 import type { ClickProps, Role } from "./types";
 
 export async function apiFetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
@@ -50,6 +51,9 @@ function notFound(request: Request, origin: string): Response {
       status: 404,
       headers: { "content-type": "text/markdown; charset=utf-8", vary: "Accept" },
     });
+  }
+  if (accept.includes("text/html")) {
+    return htmlResponse(page("Not found", `<h1>Not found</h1><p>That path is not on Click.</p><p><a href="/">Click home</a> &nbsp; <a href="/docs">Docs</a></p>`), 404);
   }
   return new Response("Not found\n", { status: 404, headers: { "content-type": "text/plain; charset=utf-8", vary: "Accept" } });
 }
