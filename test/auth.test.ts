@@ -81,7 +81,9 @@ describe("auth", () => {
     const html = await page.text();
     expect(page.status).toBe(200);
     expect(html).toContain("Tell your agent");
-    expect(html).toContain('id="onboard-prompt"');
+    expect(html).toContain('<span id="onboard-line">Connect to Click at <b>https://clickmcp.com/mcp</b>.</span>');
+    expect(html).not.toContain('id="onboard-prompt"');
+    expect(html).not.toContain("When the sign-in page opens");
     expect(page.headers.get("link") ?? "").toContain("api-catalog");
     const markdown = await SELF.fetch(`${LOCAL}/`, { headers: { accept: "text/markdown", host: "127.0.0.1:8787" } });
     expect(markdown.headers.get("content-type")).toContain("text/markdown");

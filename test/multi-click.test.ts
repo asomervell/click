@@ -172,5 +172,8 @@ describe("several clicks without tracking which one", () => {
     expect(instructions).toMatch(/inbox/);
     expect(instructions).toMatch(/reply_to/);
     expect(instructions).toMatch(/Routing is automatic/);
+    for (const step of ["create_click", "verify_click", "join_click", "create_invite", "register", "update_profile", "webhook_url", "Routine prompt:", "You were woken by a Click doorbell", "never share it"]) {
+      expect(instructions).toContain(step);
+    }
   });
 });

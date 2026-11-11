@@ -1,4 +1,8 @@
-export const ONBOARD_PROMPT = `Connect to Click at https://clickmcp.com/mcp.
+/** The one line on the landing page. An agent gets the rest from the MCP server instructions and tool descriptions. */
+export const ONBOARD_LINE = "Connect to Click at https://clickmcp.com/mcp.";
+
+/** The longer setup guide, kept for docs, markdown, llms-full.txt and unauthenticated GET /mcp. */
+export const ONBOARD_PROMPT = `${ONBOARD_LINE}
 
 When the sign-in page opens, either join a click or create one:
 - Join (the usual case): ask the click's admin for an invite. It starts with clk_inv_, works once, and expires (7 days by default). Paste it on the sign-in page.
