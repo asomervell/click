@@ -39,6 +39,8 @@ export type WakeSummary = {
 };
 
 const LOCK_MS = 60_000;
+const INVITE_DEFAULT_HOURS = 7 * 24;
+const INVITE_MAX_HOURS = 30 * 24;
 
 const CLICK_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
@@ -136,16 +138,53 @@ export class ClickHub extends DurableObject<Env> {
         created_at INTEGER NOT NULL
       );
     `);
+    this.addColumn("click_meta", "click_id", "TEXT");
+    this.addColumn("click_meta", "name", "TEXT");
+    this.addColumn("invites", "expires_at", "INTEGER");
+    this.addColumn("invites", "revoked_at", "INTEGER");
   }
 
-  async initClick(input: { email: string; clickKey: string; adminId: string }): Promise<void> {
+  private addColumn(table: string, column: string, type: string): void {
+    const columns = this.ctx.storage.sql
+      .exec<{ name: string }>(`SELECT name FROM pragma_table_info(?)`, table)
+      .toArray()
+      .map((row) => row.name);
+    if (!columns.includes(column)) this.ctx.storage.sql.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${type}`);
+  }
+
+  private knownClickId: string | null = null;
+
+  /** Remember which click this object serves, so alarms can label doorbells. Legacy hubs learn it lazily. */
+  private noteClick(clickId: string): void {
+    if (this.knownClickId === clickId) return;
+    this.knownClickId = clickId;
+    this.ctx.storage.sql.exec(`UPDATE click_meta SET click_id = ? WHERE id = 1 AND (click_id IS NULL OR click_id != ?)`, clickId, clickId);
+  }
+
+  private clickLabel(): { id: string | null; name: string | null } {
+    const row = this.ctx.storage.sql
+      .exec<{ click_id: string | null; name: string | null }>(`SELECT click_id, name FROM click_meta WHERE id = 1`)
+      .toArray()[0];
+    return { id: row?.click_id ?? this.knownClickId, name: row?.name ?? null };
+  }
+
+  async setName(props: ClickProps, name: string | null): Promise<{ click_id: string; name: string | null }> {
+    this.assertAdmin(props.role);
+    this.noteClick(props.clickId);
+    this.ctx.storage.sql.exec(`UPDATE click_meta SET name = ? WHERE id = 1`, name);
+    return { click_id: props.clickId, name };
+  }
+
+  async initClick(input: { email: string; clickKey: string; adminId: string; clickId?: string; name?: string | null }): Promise<void> {
     this.ctx.storage.sql.exec(
-      `INSERT INTO click_meta (id, email, click_key, admin_principal, created_at) VALUES (1, ?, ?, ?, ?)
+      `INSERT INTO click_meta (id, email, click_key, admin_principal, created_at, click_id, name) VALUES (1, ?, ?, ?, ?, ?, ?)
        ON CONFLICT (id) DO NOTHING`,
       input.email,
       input.clickKey,
       input.adminId,
       Date.now(),
+      input.clickId ?? null,
+      input.name ?? null,
     );
     this.ensurePrincipal(input.adminId, "admin", null);
   }
@@ -266,6 +305,7 @@ export class ClickHub extends DurableObject<Env> {
   }
 
   async whoami(props: ClickProps): Promise<Profile> {
+    this.noteClick(props.clickId);
     const label = this.ctx.storage.sql
       .exec<{ label: string | null }>(`SELECT label FROM principals WHERE id = ?`, props.principalId)
       .toArray()[0]?.label ?? null;
@@ -273,6 +313,7 @@ export class ClickHub extends DurableObject<Env> {
     return {
       principal_id: props.principalId,
       click_id: props.clickId,
+      click_name: this.clickLabel().name,
       role: props.role,
       label,
       email: props.role === "member" ? null : (this.meta()?.email ?? null),
@@ -302,6 +343,7 @@ export class ClickHub extends DurableObject<Env> {
     kind: "dm" | "topic" | "broadcast";
     recipients: string[];
   }> {
+    this.noteClick(props.clickId);
     const from = this.requireAgent(props.principalId);
     const since = Date.now() - 60_000;
     const recent = this.ctx.storage.sql
@@ -621,20 +663,100 @@ export class ClickHub extends DurableObject<Env> {
     return { token, token_id: tokenId, principal_id: principalId, role, handle: registered };
   }
 
-  async createInvite(props: ClickProps, label: string | null): Promise<{ invite: string; id: string }> {
+  async createInvite(props: ClickProps, label: string | null, expiresInHours?: number): Promise<{
+    invite: string;
+    id: string;
+    click_id: string;
+    expires_at: number | null;
+  }> {
     this.assertAdmin(props.role);
+    this.noteClick(props.clickId);
+    const hours = expiresInHours ?? INVITE_DEFAULT_HOURS;
+    if (!Number.isFinite(hours) || hours <= 0 || hours > INVITE_MAX_HOURS) {
+      throw new ClickError(`expires_in_hours must be between 0 and ${INVITE_MAX_HOURS}.`);
+    }
+    const open = this.ctx.storage.sql
+      .exec<{ n: number }>(
+        `SELECT COUNT(*) AS n FROM invites WHERE used_at IS NULL AND revoked_at IS NULL AND (expires_at IS NULL OR expires_at > ?)`,
+        Date.now(),
+      )
+      .one().n;
+    if (open >= 100) throw new ClickError("This click already has 100 open invites. Revoke some first.");
     const invite = randomToken("clk_inv_");
     const id = crypto.randomUUID();
+    const now = Date.now();
+    const expiresAt = Math.round(now + hours * 3_600_000);
+    const tokenHash = await sha256Hex(invite);
     this.ctx.storage.sql.exec(
-      `INSERT INTO invites (id, token_hash, label, created_by, created_at) VALUES (?, ?, ?, ?, ?)`,
+      `INSERT INTO invites (id, token_hash, label, created_by, created_at, expires_at) VALUES (?, ?, ?, ?, ?, ?)`,
       id,
-      await sha256Hex(invite),
+      tokenHash,
       label,
       props.principalId,
-      Date.now(),
+      now,
+      expiresAt,
     );
-    await getDirectory(this.env).rememberInvite(await sha256Hex(invite), props.clickId);
-    return { invite, id };
+    await getDirectory(this.env).rememberInvite(tokenHash, props.clickId, expiresAt);
+    return { invite, id, click_id: props.clickId, expires_at: expiresAt };
+  }
+
+  async listInvites(props: ClickProps, includeClosed = false): Promise<Array<{
+    id: string;
+    label: string | null;
+    status: "open" | "used" | "revoked" | "expired";
+    created_at: number;
+    expires_at: number | null;
+    used_at: number | null;
+    used_by: string | null;
+  }>> {
+    this.assertAdmin(props.role);
+    const now = Date.now();
+    return this.ctx.storage.sql
+      .exec<{ id: string; label: string | null; created_at: number; expires_at: number | null; used_at: number | null; revoked_at: number | null; used_by: string | null }>(
+        `SELECT i.id, i.label, i.created_at, i.expires_at, i.used_at, i.revoked_at, a.handle AS used_by
+         FROM invites i LEFT JOIN agents a ON a.principal_id = i.used_by
+         ORDER BY i.created_at DESC LIMIT 200`,
+      )
+      .toArray()
+      .map((row) => ({
+        id: row.id,
+        label: row.label,
+        status: row.revoked_at != null
+          ? "revoked" as const
+          : row.used_at != null
+            ? "used" as const
+            : row.expires_at != null && row.expires_at <= now
+              ? "expired" as const
+              : "open" as const,
+        created_at: row.created_at,
+        expires_at: row.expires_at,
+        used_at: row.used_at,
+        used_by: row.used_by,
+      }))
+      .filter((row) => includeClosed || row.status === "open");
+  }
+
+  async revokeInvite(props: ClickProps, inviteId: string): Promise<{ id: string; revoked: boolean }> {
+    this.assertAdmin(props.role);
+    const row = this.ctx.storage.sql
+      .exec<{ token_hash: string }>(
+        `SELECT token_hash FROM invites WHERE id = ? AND used_at IS NULL AND revoked_at IS NULL`,
+        inviteId.trim(),
+      )
+      .toArray()[0];
+    if (!row) return { id: inviteId, revoked: false };
+    this.ctx.storage.sql.exec(`UPDATE invites SET revoked_at = ? WHERE id = ?`, Date.now(), inviteId.trim());
+    await getDirectory(this.env).revokeInvite(row.token_hash);
+    return { id: inviteId, revoked: true };
+  }
+
+  async markInviteUsed(tokenHash: string, principalId: string): Promise<void> {
+    this.ctx.storage.sql.exec(
+      `UPDATE invites SET used_at = ?, used_by = ? WHERE token_hash = ? AND used_at IS NULL`,
+      Date.now(),
+      principalId,
+      tokenHash,
+    );
   }
 
   async revokeToken(props: ClickProps, tokenId: string): Promise<{ revoked: boolean }> {
@@ -739,14 +861,16 @@ export class ClickHub extends DurableObject<Env> {
     };
   }
 
-  async processWakes(dueAt = Date.now()): Promise<WakeSummary> {
+  async processWakes(dueAt = Date.now(), clickId?: string): Promise<WakeSummary> {
+    if (clickId) this.noteClick(clickId);
+    const click = this.clickLabel();
     const summary: WakeSummary = { attempted: 0, delivered: 0, retrying: 0, failed: 0 };
     for (let batch = 0; batch < 5; batch++) {
       const jobs = this.claim(dueAt);
       if (jobs.length === 0) break;
       for (const job of jobs) {
         summary.attempted += 1;
-        const outcome = await postDoorbell(job);
+        const outcome = await postDoorbell({ ...job, clickId: click.id, clickName: click.name });
         const state = this.recordWake(job.id, job.attempts, outcome, Date.now());
         summary[state] += 1;
       }

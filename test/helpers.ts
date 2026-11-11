@@ -1,5 +1,6 @@
 import { SELF } from "cloudflare:test";
 import { base64url } from "../src/crypto";
+import { testOutbox } from "../src/email";
 
 export const OWNER_KEY = "click-test-owner-key";
 export const LOCAL = "http://127.0.0.1:8787";
@@ -79,15 +80,47 @@ export async function callTool(origin: string, token: string, name: string, args
   return JSON.parse(text) as unknown;
 }
 
-export async function createClick(origin = LOCAL): Promise<{ click_id: string; click_key: string; principal_id: string }> {
-  const response = await SELF.fetch(`${origin}/api/clicks`, {
+export function lastCode(email: string): string {
+  const mail = [...testOutbox].reverse().find((item) => item.to === email.toLowerCase());
+  if (!mail) throw new Error(`no verification mail for ${email}`);
+  return mail.code;
+}
+
+export function testEmail(): string {
+  return `person-${crypto.randomUUID().slice(0, 8)}@example.com`;
+}
+
+export async function startCreate(origin: string, email: string, extra: Record<string, unknown> = {}, bearer?: string): Promise<{ status: number; body: Record<string, unknown> }> {
+  const headers: Record<string, string> = {
+    "content-type": "application/json",
+    host: new URL(origin).host,
+    "cf-connecting-ip": `198.51.100.${Math.floor(Math.random() * 250) + 1}`,
+  };
+  if (bearer) headers.authorization = `Bearer ${bearer}`;
+  const response = await SELF.fetch(`${origin}/api/v1/clicks`, { method: "POST", headers, body: JSON.stringify({ email, ...extra }) });
+  return { status: response.status, body: await response.json() as Record<string, unknown> };
+}
+
+export async function verifyCreate(origin: string, pendingId: string, code: string): Promise<{ status: number; body: Record<string, unknown> }> {
+  const response = await SELF.fetch(`${origin}/api/v1/clicks/verify`, {
     method: "POST",
     headers: { "content-type": "application/json", host: new URL(origin).host },
-    body: JSON.stringify({ email: `person-${crypto.randomUUID().slice(0, 8)}@example.com` }),
+    body: JSON.stringify({ pending_id: pendingId, code }),
   });
-  const body = await response.json() as { click_id?: string; click_key?: string; principal_id?: string; error?: string };
-  if (!response.ok || !body.click_key || !body.click_id || !body.principal_id) {
-    throw new Error(`create click ${response.status}: ${JSON.stringify(body)}`);
+  return { status: response.status, body: await response.json() as Record<string, unknown> };
+}
+
+/** Create a click through the two-step email verification flow. */
+export async function createClick(origin = LOCAL, extra: Record<string, unknown> = {}): Promise<{ click_id: string; click_key: string; principal_id: string }> {
+  const email = testEmail();
+  const started = await startCreate(origin, email, extra);
+  if (started.status !== 202 || typeof started.body.pending_id !== "string") {
+    throw new Error(`create click ${started.status}: ${JSON.stringify(started.body)}`);
+  }
+  const verified = await verifyCreate(origin, started.body.pending_id, lastCode(email));
+  const body = verified.body as { click_id?: string; click_key?: string; principal_id?: string };
+  if (verified.status !== 201 || !body.click_key || !body.click_id || !body.principal_id) {
+    throw new Error(`verify click ${verified.status}: ${JSON.stringify(body)}`);
   }
   return { click_id: body.click_id, click_key: body.click_key, principal_id: body.principal_id };
 }
@@ -137,7 +170,7 @@ export async function signIn(origin: string, input: { email?: string; key?: stri
   form.set("label", "test-bot");
   form.append("scope", "click");
   form.append("scope", "offline_access");
-  const posted = await SELF.fetch(new Request(`${origin}/authorize`, {
+  const post = (body: URLSearchParams) => SELF.fetch(new Request(`${origin}/authorize`, {
     method: "POST",
     redirect: "manual",
     headers: {
@@ -145,8 +178,25 @@ export async function signIn(origin: string, input: { email?: string; key?: stri
       cookie: cookies(page),
       ...(input.originHeader === null ? {} : { origin: input.originHeader ?? origin }),
     },
-    body: form,
+    body,
   }));
+  let posted = await post(form);
+  if (input.email && posted.status === 200) {
+    const codePage = await posted.text();
+    const pendingId = /name="pending_id" value="([^"]+)"/.exec(codePage)?.[1];
+    if (!pendingId) throw new Error(`no code form: ${codePage}`);
+    const verify = new URLSearchParams();
+    verify.set("handle", handle);
+    verify.set("csrf", csrf);
+    verify.set("mode", "verify");
+    verify.set("pending_id", pendingId);
+    verify.set("email", input.email);
+    verify.set("code", lastCode(input.email));
+    verify.set("decision", "approve");
+    verify.append("scope", "click");
+    verify.append("scope", "offline_access");
+    posted = await post(verify);
+  }
   const location = posted.headers.get("location");
   if (posted.status !== 302 || !location) throw new Error(`consent ${posted.status}: ${await posted.text()}`);
   const redirected = new URL(location);

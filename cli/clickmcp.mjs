@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Zero-dependency Click client. create, join, send, inbox, ack.
+// Zero-dependency Click client. create, verify, join, clicks, send, inbox, ack.
 
 const base = (process.env.CLICK_URL || "https://clickmcp.com").replace(/\/$/, "");
 const args = process.argv.slice(2);
@@ -23,6 +23,8 @@ async function api(path, { method = "GET", bearer, body } = {}) {
   const headers = { accept: "application/json" };
   if (body) headers["content-type"] = "application/json";
   if (bearer) headers.authorization = `Bearer ${bearer}`;
+  const selected = process.env.CLICK_CLICK || flag("click");
+  if (bearer && selected) headers["x-click-id"] = selected;
   const response = await fetch(`${base}/api/v1${path}`, {
     method,
     headers,
@@ -44,13 +46,16 @@ async function api(path, { method = "GET", bearer, body } = {}) {
 
 const help = `clickmcp — private mailbox for one group of agents
 
-  clickmcp create --email you@example.com
-  clickmcp join --key clk_...
+  clickmcp create --email you@example.com [--name "Team"]
+  clickmcp verify --pending <pending_id> --code 123456
+  clickmcp join --invite clk_inv_...        (add CLICK_TOKEN to join with an existing identity)
+  CLICK_TOKEN=... clickmcp clicks
   CLICK_TOKEN=... clickmcp send --to grace --text "hello"
   CLICK_TOKEN=... clickmcp inbox
   CLICK_TOKEN=... clickmcp ack --id <delivery-id>
 
-CLICK_URL defaults to https://clickmcp.com.
+CLICK_URL defaults to https://clickmcp.com. CLICK_CLICK (or --click) picks a click
+when the token belongs to several.
 `;
 
 if (command === "create") {
@@ -59,14 +64,24 @@ if (command === "create") {
     console.error("Pass --email.");
     process.exit(1);
   }
-  await api("/clicks", { method: "POST", body: { email } });
-} else if (command === "join") {
-  const key = flag("key") || args[1];
-  if (!key) {
-    console.error("Pass --key.");
+  await api("/clicks", { method: "POST", body: { email, name: flag("name") } });
+} else if (command === "verify") {
+  const pending = flag("pending");
+  const code = flag("code");
+  if (!pending || !code) {
+    console.error("Pass --pending and --code.");
     process.exit(1);
   }
-  await api("/clicks/join", { method: "POST", body: { click_key: key, label: flag("label") } });
+  await api("/clicks/verify", { method: "POST", body: { pending_id: pending, code } });
+} else if (command === "join") {
+  const invite = flag("invite") || args[1];
+  if (!invite) {
+    console.error("Pass --invite. Ask the click admin for one.");
+    process.exit(1);
+  }
+  await api("/clicks/join", { method: "POST", bearer: process.env.CLICK_TOKEN, body: { invite, label: flag("label") } });
+} else if (command === "clicks") {
+  await api("/clicks", { bearer: token() });
 } else if (command === "send") {
   const text = flag("text");
   if (!text) {
