@@ -4,7 +4,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { verifyDoorbell } from "../src/webhook";
 import { getHub } from "../src/hub";
 import { parseWebhookUrl } from "../src/validate";
-import { callTool, handle, initialize, LOCAL, OWNER_KEY } from "./helpers";
+import { callTool, createClick, handle, initialize, LOCAL } from "./helpers";
 
 const originalFetch = globalThis.fetch;
 
@@ -24,9 +24,10 @@ describe("mailbox", () => {
   it("sends, reads, and acks between two agents", async () => {
     const adaHandle = handle("ada");
     const graceHandle = handle("grace");
-    await initialize(LOCAL, OWNER_KEY);
-    const ada = await callTool(LOCAL, OWNER_KEY, "mint_token", { handle: adaHandle }) as { token: string };
-    const grace = await callTool(LOCAL, OWNER_KEY, "mint_token", { handle: graceHandle }) as { token: string };
+    const created = await createClick();
+    await initialize(LOCAL, created.click_key);
+    const ada = await callTool(LOCAL, created.click_key, "mint_token", { handle: adaHandle }) as { token: string };
+    const grace = await callTool(LOCAL, created.click_key, "mint_token", { handle: graceHandle }) as { token: string };
     await initialize(LOCAL, ada.token);
     await initialize(LOCAL, grace.token);
     const sent = await callTool(LOCAL, ada.token, "send", { to: graceHandle, text: "hello grace" }) as {
@@ -57,9 +58,10 @@ describe("mailbox", () => {
     const adaHandle = handle("ada");
     const graceHandle = handle("grace");
     const topic = handle("ops");
-    await initialize(LOCAL, OWNER_KEY);
-    const ada = await callTool(LOCAL, OWNER_KEY, "mint_token", { handle: adaHandle }) as { token: string };
-    const grace = await callTool(LOCAL, OWNER_KEY, "mint_token", { handle: graceHandle }) as { token: string };
+    const created = await createClick();
+    await initialize(LOCAL, created.click_key);
+    const ada = await callTool(LOCAL, created.click_key, "mint_token", { handle: adaHandle }) as { token: string };
+    const grace = await callTool(LOCAL, created.click_key, "mint_token", { handle: graceHandle }) as { token: string };
     await initialize(LOCAL, ada.token);
     await initialize(LOCAL, grace.token);
     await callTool(LOCAL, grace.token, "subscribe", { topic });
@@ -92,9 +94,10 @@ describe("mailbox", () => {
 
     const adaHandle = handle("ada");
     const graceHandle = handle("grace");
-    await initialize(LOCAL, OWNER_KEY);
-    const ada = await callTool(LOCAL, OWNER_KEY, "mint_token", { handle: adaHandle }) as { token: string };
-    const grace = await callTool(LOCAL, OWNER_KEY, "mint_token", { handle: graceHandle }) as { token: string };
+    const created = await createClick();
+    await initialize(LOCAL, created.click_key);
+    const ada = await callTool(LOCAL, created.click_key, "mint_token", { handle: adaHandle }) as { token: string };
+    const grace = await callTool(LOCAL, created.click_key, "mint_token", { handle: graceHandle }) as { token: string };
     await initialize(LOCAL, ada.token);
     await initialize(LOCAL, grace.token);
     await callTool(LOCAL, grace.token, "update_profile", {
@@ -114,7 +117,7 @@ describe("mailbox", () => {
       signature: first.signature,
     })).toBe(true);
 
-    const hub = getHub(env);
+    const hub = getHub(env, created.click_id);
     for (let attempt = 0; attempt < 6; attempt++) {
       await hub.processWakes(Date.now() + 86_400_000);
     }
@@ -136,13 +139,37 @@ describe("mailbox", () => {
   });
 
   it("keeps registrations after the Durable Object is evicted", async () => {
-    const hub = getHub(env);
-    const props = await hub.createMember("kept");
-    await hub.register(props, { handle: "kept", description: "still here" });
+    const created = await createClick();
+    const hub = getHub(env, created.click_id);
+    const name = handle("kept");
+    await hub.register(
+      { principalId: created.principal_id, clickId: created.click_id, role: "admin" },
+      { handle: name, description: "still here" },
+    );
     await evictDurableObject(hub);
     const agents = await hub.listAgents();
-    expect(agents.map((agent) => agent.handle)).toContain("kept");
+    expect(agents.map((agent) => agent.handle)).toContain(name);
     const alarmRan = await runDurableObjectAlarm(hub);
     expect(typeof alarmRan).toBe("boolean");
+  });
+
+  it("isolates clicks and lets an agent leave", async () => {
+    const first = await createClick();
+    const second = await createClick();
+    const ada = handle("ada");
+    const bob = handle("bob");
+    await initialize(LOCAL, first.click_key);
+    await initialize(LOCAL, second.click_key);
+    await callTool(LOCAL, first.click_key, "register", { handle: ada });
+    await callTool(LOCAL, first.click_key, "mint_token", { handle: bob });
+    await callTool(LOCAL, first.click_key, "send", { to: bob, text: "secret" });
+    await callTool(LOCAL, second.click_key, "register", { handle: ada });
+    const otherAgents = await callTool(LOCAL, second.click_key, "list_agents") as Array<{ handle: string }>;
+    expect(otherAgents.map((agent) => agent.handle)).toEqual([ada]);
+    const left = await callTool(LOCAL, first.click_key, "leave") as { handle: string };
+    expect(left.handle).toBe(ada);
+    const remaining = await callTool(LOCAL, first.click_key, "list_agents") as Array<{ handle: string }>;
+    expect(remaining.map((agent) => agent.handle)).not.toContain(ada);
+    expect(remaining.map((agent) => agent.handle)).toContain(bob);
   });
 });

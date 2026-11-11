@@ -1,6 +1,7 @@
 import { McpServer } from "@modelcontextprotocol/server";
 import { createMcpHandler } from "agents/mcp/server";
 import { z } from "zod";
+import { createClick, joinWithKey, rotateClickKey } from "./clicks";
 import { getHub } from "./hub";
 import { ROUTINE_PROMPT } from "./routine";
 import { ClickError, type ClickProps } from "./types";
@@ -45,7 +46,7 @@ function register(
 
 export function buildServer(env: Env, ctx: ExecutionContext, props: ClickProps): McpServer {
   const server = new McpServer({ name: "click", version: "1.0.0" });
-  const hub = () => getHub(env);
+  const hub = () => getHub(env, props.clickId);
 
   register(server, "register", "Register this connection's agent. One agent per connection. Handle is how others address you.", z.object({
     handle: z.string().describe("Lowercase handle, 1–32 letters, digits, or hyphens"),
@@ -63,7 +64,28 @@ export function buildServer(env: Env, ctx: ExecutionContext, props: ClickProps):
     clear_webhook: z.boolean().optional(),
   }), false, (args) => hub().updateProfile(props, args));
 
-  register(server, "whoami", "Show the identity and agent bound to this token.", z.object({}), true, () => hub().whoami(props));
+  register(server, "create_click", "Create another private click. Returns its click key once. This connection stays in its current click.", z.object({
+    email: z.string().describe("Primary contact email for the new click"),
+  }), false, (args) => createClick(env, String(args.email)));
+
+  register(server, "show_key", "Admin only. Show this click's key so you can share it with another agent.", z.object({}), true, () => hub().showKey(props));
+
+  register(server, "rotate_key", "Admin only. Replace the click key. The previous key stops working immediately.", z.object({}), false, () => rotateClickKey(env, props));
+
+  register(server, "join_click", "Join a different click with its key. Returns a new bearer token for that click. This connection stays put.", z.object({
+    click_key: z.string(),
+    label: z.string().optional(),
+  }), false, (args) => joinWithKey(env, String(args.click_key), args.label ? String(args.label) : null));
+
+  register(server, "list_members", "Handles in this click.", z.object({}), true, () => hub().listMembers());
+
+  register(server, "leave", "Delete your own agent registration in this click. Your handle can be claimed again.", z.object({}), false, () => hub().leave(props));
+
+  register(server, "remove_member", "Admin only. Remove another agent's registration from this click.", z.object({
+    handle: z.string(),
+  }), false, (args) => hub().removeMember(props, String(args.handle)));
+
+  register(server, "whoami", "Show the identity, click, and agent bound to this token.", z.object({}), true, () => hub().whoami(props));
 
   register(server, "list_agents", "List registered agents. Webhook URLs and keys are not included.", z.object({}), true, () => hub().listAgents());
 
@@ -80,7 +102,7 @@ export function buildServer(env: Env, ctx: ExecutionContext, props: ClickProps):
     false,
     async (args) => {
       const result = await hub().send(props, args);
-      ctx.waitUntil(ring(env));
+      ctx.waitUntil(ring(env, props.clickId));
       return result;
     },
   );
@@ -115,22 +137,21 @@ export function buildServer(env: Env, ctx: ExecutionContext, props: ClickProps):
     limit: z.number().int().min(1).max(50).optional(),
   }), true, (args) => hub().deliveryStatus(props, args));
 
-  register(server, "mint_token", "Owner only. Mint a bearer token for a client that cannot do OAuth. The token is returned once.", z.object({
+  register(server, "mint_token", "Admin only. Mint a bearer token for a client that cannot do OAuth. The token is returned once.", z.object({
     label: z.string().optional(),
-    role: z.enum(["member", "owner"]).optional().describe("Default member. owner shares the owner identity"),
     handle: z.string().optional().describe("Register this handle for the new token immediately"),
     name: z.string().optional(),
   }), false, (args) => hub().mintToken(props, args));
 
-  register(server, "create_invite", "Owner only. Mint a single-use invite. Someone enters it on the sign-in page instead of the owner key.", z.object({
+  register(server, "create_invite", "Admin only. Mint a single-use invite for this click. Someone enters it on the sign-in page instead of the click key.", z.object({
     label: z.string().optional(),
   }), false, async (args) => hub().createInvite(props, args.label ?? null));
 
-  register(server, "revoke_token", "Owner only. Revoke a minted bearer token by the id returned from mint_token or list_tokens.", z.object({
+  register(server, "revoke_token", "Admin only. Revoke a minted bearer token by id.", z.object({
     token_id: z.string(),
   }), false, (args) => hub().revokeToken(props, args.token_id));
 
-  register(server, "list_tokens", "Owner only. List minted bearer tokens. Secrets are not shown.", z.object({}), true, () => hub().listTokens(props));
+  register(server, "list_tokens", "Admin only. List minted bearer tokens. Secrets are not shown.", z.object({}), true, () => hub().listTokens(props));
 
   server.registerResource("me", "click://me", { description: "This connection's profile", mimeType: "application/json" }, async (uri) => ({
     contents: [{ uri: uri.href, mimeType: "application/json", text: JSON.stringify(await hub().whoami(props)) }],
@@ -152,9 +173,9 @@ export function buildServer(env: Env, ctx: ExecutionContext, props: ClickProps):
   return server;
 }
 
-async function ring(env: Env): Promise<void> {
+async function ring(env: Env, clickId: string): Promise<void> {
   try {
-    const summary = await getHub(env).processWakes(Date.now());
+    const summary = await getHub(env, clickId).processWakes(Date.now());
     if (summary.attempted > 0) console.log(JSON.stringify({ message: "doorbell", ...summary }));
   } catch (error) {
     console.error(JSON.stringify({

@@ -3,8 +3,7 @@ import {
   type OAuthProviderOptions,
   type ResolveExternalTokenResult,
 } from "@cloudflare/workers-oauth-provider";
-import { ownerKeyMatches, sha256Hex } from "./crypto";
-import { getHub } from "./hub";
+import { resolveBearer } from "./clicks";
 import type { ClickProps } from "./types";
 
 const SCOPES = ["click", "offline_access"];
@@ -19,9 +18,9 @@ export function providerOptions(origin: string): OAuthProviderOptions<Env> {
       },
     },
     defaultHandler: {
-      async fetch(request, env) {
+      async fetch(request, env, ctx) {
         const { defaultFetch } = await import("./routes");
-        return defaultFetch(request, env);
+        return defaultFetch(request, env, ctx);
       },
     },
     authorizeEndpoint: "/authorize",
@@ -52,14 +51,7 @@ async function resolveExternalToken(input: {
   request: Request;
   env: Env;
 }): Promise<ResolveExternalTokenResult | null> {
-  const token = input.token.trim();
-  if (token.length === 0 || token.length > 512) return null;
-  const audience = `${new URL(input.request.url).origin}/mcp`;
-  let props: ClickProps | null = null;
-  if (await ownerKeyMatches(token, input.env.OWNER_KEY_HASH)) {
-    props = { principalId: "owner", role: "owner" };
-  } else if (token.startsWith("clk_") && !token.startsWith("clk_inv_")) {
-    props = await getHub(input.env).resolveTokenHash(await sha256Hex(token));
-  }
-  return props ? { props, audience } : null;
+  const props: ClickProps | null = await resolveBearer(input.env, input.token, input.request);
+  if (!props) return null;
+  return { props, audience: `${new URL(input.request.url).origin}/mcp` };
 }

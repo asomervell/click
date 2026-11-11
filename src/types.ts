@@ -1,10 +1,10 @@
 export const PRODUCTION_ORIGIN = "https://clickmcp.com";
-export const OWNER_ID = "owner";
 
-export type Role = "owner" | "member";
+export type Role = "admin" | "member" | "operator";
 
 export type ClickProps = {
   principalId: string;
+  clickId: string;
   role: Role;
 };
 
@@ -24,8 +24,10 @@ export type PublicAgent = {
 
 export type Profile = {
   principal_id: string;
+  click_id: string;
   role: Role;
   label: string | null;
+  email: string | null;
   agent: {
     handle: string;
     name: string;

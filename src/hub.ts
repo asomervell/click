@@ -1,6 +1,7 @@
 import { DurableObject } from "cloudflare:workers";
 import { randomToken, sha256Hex } from "./crypto";
-import { ClickError, OWNER_ID, type ClickProps, type Profile, type PublicAgent, type Role } from "./types";
+import { getDirectory } from "./directory";
+import { ClickError, type ClickProps, type Profile, type PublicAgent, type Role } from "./types";
 import {
   clampLimit,
   parseWebhookUrl,
@@ -39,14 +40,16 @@ export type WakeSummary = {
 
 const LOCK_MS = 60_000;
 
-export function getHub(env: Env): DurableObjectStub<ClickHub> {
-  return env.CLICK.getByName("hub");
+const CLICK_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+
+export function getHub(env: Env, clickId: string): DurableObjectStub<ClickHub> {
+  if (!CLICK_ID.test(clickId)) throw new ClickError("Unknown click.");
+  return env.CLICK.getByName(clickId);
 }
 
 /**
- * One SQLite Durable Object is the coordination atom: the directory, every
- * event, and the wake queue have to commit together. This is a private bridge,
- * not a public multi-tenant bus.
+ * One SQLite Durable Object per click. Agents, messages, and webhook retries
+ * for that click commit together and are invisible to every other click.
  */
 export class ClickHub extends DurableObject<Env> {
   constructor(ctx: DurableObjectState, env: Env) {
@@ -125,16 +128,37 @@ export class ClickHub extends DurableObject<Env> {
         created_at INTEGER NOT NULL,
         PRIMARY KEY (topic, agent_id)
       );
+      CREATE TABLE IF NOT EXISTS click_meta (
+        id INTEGER PRIMARY KEY CHECK (id = 1),
+        email TEXT NOT NULL,
+        click_key TEXT NOT NULL,
+        admin_principal TEXT NOT NULL,
+        created_at INTEGER NOT NULL
+      );
     `);
   }
 
-  async createMember(label: string | null): Promise<ClickProps> {
+  async initClick(input: { email: string; clickKey: string; adminId: string }): Promise<void> {
+    this.ctx.storage.sql.exec(
+      `INSERT INTO click_meta (id, email, click_key, admin_principal, created_at) VALUES (1, ?, ?, ?, ?)
+       ON CONFLICT (id) DO NOTHING`,
+      input.email,
+      input.clickKey,
+      input.adminId,
+      Date.now(),
+    );
+    this.ensurePrincipal(input.adminId, "admin", null);
+  }
+
+  async createMember(label: string | null): Promise<{ principalId: string; role: "member" }> {
+    const count = this.ctx.storage.sql.exec<{ n: number }>(`SELECT COUNT(*) AS n FROM agents`).one().n;
+    if (count >= 100) throw new ClickError("This click already has 100 agents.");
     const id = crypto.randomUUID();
     this.ensurePrincipal(id, "member", label);
     return { principalId: id, role: "member" };
   }
 
-  async consumeInviteHash(tokenHash: string, label: string | null): Promise<ClickProps | null> {
+  async consumeInviteHash(tokenHash: string, label: string | null): Promise<{ principalId: string; role: "member" } | null> {
     const principalId = crypto.randomUUID();
     const now = Date.now();
     const consumed = this.ctx.storage.transactionSync(() => {
@@ -153,14 +177,14 @@ export class ClickHub extends DurableObject<Env> {
     return consumed ? { principalId, role: "member" } : null;
   }
 
-  async resolveTokenHash(tokenHash: string): Promise<ClickProps | null> {
+  async resolveTokenHash(tokenHash: string): Promise<{ principalId: string; role: Role } | null> {
     const row = this.ctx.storage.sql
       .exec<{ principal_id: string; role: Role }>(
         `SELECT principal_id, role FROM api_tokens WHERE token_hash = ? AND revoked_at IS NULL`,
         tokenHash,
       )
       .toArray()[0];
-    if (!row || (row.role !== "owner" && row.role !== "member")) return null;
+    if (!row || (row.role !== "admin" && row.role !== "member" && row.role !== "operator")) return null;
     return { principalId: row.principal_id, role: row.role };
   }
 
@@ -240,8 +264,10 @@ export class ClickHub extends DurableObject<Env> {
     const agent = this.agentByPrincipal(props.principalId);
     return {
       principal_id: props.principalId,
+      click_id: props.clickId,
       role: props.role,
       label,
+      email: props.role === "member" ? null : (this.meta()?.email ?? null),
       agent: agent
         ? {
             handle: agent.handle,
@@ -269,6 +295,11 @@ export class ClickHub extends DurableObject<Env> {
     recipients: string[];
   }> {
     const from = this.requireAgent(props.principalId);
+    const since = Date.now() - 60_000;
+    const recent = this.ctx.storage.sql
+      .exec<{ n: number }>(`SELECT COUNT(*) AS n FROM events WHERE from_agent_id = ? AND created_at > ?`, from.id, since)
+      .one().n;
+    if (recent >= 30) throw new ClickError("Too many messages in the last minute. Wait and try again.");
     const text = requireText(input.text);
     const chosen = [input.to?.trim(), input.topic?.trim(), input.broadcast ? "broadcast" : ""].filter(Boolean);
     if (chosen.length !== 1) throw new ClickError("Set exactly one of to, topic, or broadcast.");
@@ -349,10 +380,10 @@ export class ClickHub extends DurableObject<Env> {
         text: string;
         created_at: number;
       }>(
-        `SELECT d.id, d.event_id, s.handle AS from_handle, e.kind, e.topic, e.text, e.created_at
+        `SELECT d.id, d.event_id, COALESCE(s.handle, '(left)') AS from_handle, e.kind, e.topic, e.text, e.created_at
          FROM deliveries d
          JOIN events e ON e.id = d.event_id
-         JOIN agents s ON s.id = e.from_agent_id
+         LEFT JOIN agents s ON s.id = e.from_agent_id
          WHERE d.agent_id = ? AND d.acked_at IS NULL
          ORDER BY e.created_at ASC
          LIMIT ?`,
@@ -472,9 +503,9 @@ export class ClickHub extends DurableObject<Env> {
       const topic = requireHandle(input.topic, "topic");
       rows = this.ctx.storage.sql
         .exec<HistoryRow>(
-          `SELECT e.id, e.kind, e.topic, s.handle AS from_handle, t.handle AS to_handle, e.text, e.created_at
+          `SELECT e.id, e.kind, e.topic, COALESCE(s.handle, '(left)') AS from_handle, t.handle AS to_handle, e.text, e.created_at
            FROM events e
-           JOIN agents s ON s.id = e.from_agent_id
+           LEFT JOIN agents s ON s.id = e.from_agent_id
            LEFT JOIN agents t ON t.id = e.to_agent_id
            WHERE e.kind = 'topic' AND e.topic = ? AND e.created_at < ?
            ORDER BY e.created_at DESC LIMIT ?`,
@@ -488,9 +519,9 @@ export class ClickHub extends DurableObject<Env> {
       if (!other) throw new ClickError(`No agent named ${input.with.trim().toLowerCase()}.`);
       rows = this.ctx.storage.sql
         .exec<HistoryRow>(
-          `SELECT e.id, e.kind, e.topic, s.handle AS from_handle, t.handle AS to_handle, e.text, e.created_at
+          `SELECT e.id, e.kind, e.topic, COALESCE(s.handle, '(left)') AS from_handle, t.handle AS to_handle, e.text, e.created_at
            FROM events e
-           JOIN agents s ON s.id = e.from_agent_id
+           LEFT JOIN agents s ON s.id = e.from_agent_id
            LEFT JOIN agents t ON t.id = e.to_agent_id
            WHERE e.kind = 'dm' AND e.created_at < ?
              AND ((e.from_agent_id = ? AND e.to_agent_id = ?) OR (e.from_agent_id = ? AND e.to_agent_id = ?))
@@ -506,9 +537,9 @@ export class ClickHub extends DurableObject<Env> {
     } else {
       rows = this.ctx.storage.sql
         .exec<HistoryRow>(
-          `SELECT e.id, e.kind, e.topic, s.handle AS from_handle, t.handle AS to_handle, e.text, e.created_at
+          `SELECT e.id, e.kind, e.topic, COALESCE(s.handle, '(left)') AS from_handle, t.handle AS to_handle, e.text, e.created_at
            FROM events e
-           JOIN agents s ON s.id = e.from_agent_id
+           LEFT JOIN agents s ON s.id = e.from_agent_id
            LEFT JOIN agents t ON t.id = e.to_agent_id
            WHERE e.created_at < ? AND (
              e.from_agent_id = ?
@@ -541,17 +572,14 @@ export class ClickHub extends DurableObject<Env> {
     handle?: string;
     name?: string;
   }): Promise<{ token: string; token_id: string; principal_id: string; role: Role; handle: string | null }> {
-    this.assertOwner(props.role);
-    const role: Role = input.role === "owner" ? "owner" : "member";
+    this.assertAdmin(props.role);
+    const role: Role = "member";
     const label = input.label ?? null;
     const requestedHandle = input.handle ? requireHandle(input.handle) : null;
     if (requestedHandle && this.agentByHandle(requestedHandle)) {
       throw new ClickError(`The handle ${requestedHandle} is taken.`);
     }
-    if (requestedHandle && role === "owner" && this.agentByPrincipal(OWNER_ID)) {
-      throw new ClickError("The owner identity already has an agent.");
-    }
-    const principalId = role === "owner" ? OWNER_ID : crypto.randomUUID();
+    const principalId = crypto.randomUUID();
     const token = randomToken("clk_");
     const tokenHash = await sha256Hex(token);
     const tokenId = crypto.randomUUID();
@@ -571,16 +599,22 @@ export class ClickHub extends DurableObject<Env> {
     let registered: string | null = null;
     if (requestedHandle) {
       const profile = await this.register(
-        { principalId, role },
+        { principalId, clickId: props.clickId, role },
         { handle: requestedHandle, name: input.name, description: "" },
       );
       registered = profile.agent?.handle ?? null;
     }
+    await getDirectory(this.env).rememberToken({
+      tokenHash,
+      clickId: props.clickId,
+      principalId,
+      role,
+    });
     return { token, token_id: tokenId, principal_id: principalId, role, handle: registered };
   }
 
   async createInvite(props: ClickProps, label: string | null): Promise<{ invite: string; id: string }> {
-    this.assertOwner(props.role);
+    this.assertAdmin(props.role);
     const invite = randomToken("clk_inv_");
     const id = crypto.randomUUID();
     this.ctx.storage.sql.exec(
@@ -591,17 +625,19 @@ export class ClickHub extends DurableObject<Env> {
       props.principalId,
       Date.now(),
     );
+    await getDirectory(this.env).rememberInvite(await sha256Hex(invite), props.clickId);
     return { invite, id };
   }
 
   async revokeToken(props: ClickProps, tokenId: string): Promise<{ revoked: boolean }> {
-    this.assertOwner(props.role);
-    const result = this.ctx.storage.sql.exec(
-      `UPDATE api_tokens SET revoked_at = ? WHERE id = ? AND revoked_at IS NULL`,
-      Date.now(),
-      tokenId,
-    );
-    return { revoked: result.rowsWritten === 1 };
+    this.assertAdmin(props.role);
+    const existing = this.ctx.storage.sql
+      .exec<{ token_hash: string }>(`SELECT token_hash FROM api_tokens WHERE id = ? AND revoked_at IS NULL`, tokenId)
+      .toArray()[0];
+    if (!existing) return { revoked: false };
+    this.ctx.storage.sql.exec(`UPDATE api_tokens SET revoked_at = ? WHERE id = ?`, Date.now(), tokenId);
+    await getDirectory(this.env).revokeHash(existing.token_hash);
+    return { revoked: true };
   }
 
   async listTokens(props: ClickProps): Promise<Array<{
@@ -612,7 +648,7 @@ export class ClickHub extends DurableObject<Env> {
     created_at: number;
     revoked: boolean;
   }>> {
-    this.assertOwner(props.role);
+    this.assertAdmin(props.role);
     return this.ctx.storage.sql
       .exec<{
         id: string;
@@ -817,8 +853,91 @@ export class ClickHub extends DurableObject<Env> {
     );
   }
 
-  private assertOwner(role: Role): void {
-    if (role !== "owner") throw new ClickError("Only the owner key can do that.");
+  async rememberIssuedToken(input: { token: string; principalId: string; role: Role; label: string | null }): Promise<void> {
+    this.ensurePrincipal(input.principalId, input.role, input.label);
+    this.ctx.storage.sql.exec(
+      `INSERT INTO api_tokens (id, token_hash, principal_id, role, label, created_at) VALUES (?, ?, ?, ?, ?, ?)`,
+      crypto.randomUUID(),
+      await sha256Hex(input.token),
+      input.principalId,
+      input.role,
+      input.label,
+      Date.now(),
+    );
+  }
+
+  async showKey(props: ClickProps): Promise<{ click_id: string; click_key: string; email: string }> {
+    this.assertAdmin(props.role);
+    const meta = this.requireMeta();
+    return { click_id: props.clickId, click_key: meta.click_key, email: meta.email };
+  }
+
+  async setKey(clickKey: string): Promise<void> {
+    this.ctx.storage.sql.exec(`UPDATE click_meta SET click_key = ? WHERE id = 1`, clickKey);
+  }
+
+  async leave(props: ClickProps): Promise<{ handle: string }> {
+    const agent = this.agentByPrincipal(props.principalId);
+    if (!agent) throw new ClickError("You have no agent to remove.");
+    this.deleteAgent(agent.id, props.principalId);
+    await getDirectory(this.env).forgetPrincipal(props.clickId, props.principalId);
+    return { handle: agent.handle };
+  }
+
+  async removeMember(props: ClickProps, handle: string): Promise<{ handle: string }> {
+    this.assertAdmin(props.role);
+    const name = requireHandle(handle, "handle");
+    const agent = this.agentByHandle(name);
+    if (!agent) throw new ClickError(`No agent named ${name}.`);
+    if (agent.principal_id === props.principalId) throw new ClickError("Use leave to remove your own agent.");
+    const meta = this.requireMeta();
+    if (agent.principal_id === meta.admin_principal) throw new ClickError("The click admin cannot be removed. They can leave.");
+    this.deleteAgent(agent.id, agent.principal_id);
+    await getDirectory(this.env).forgetPrincipal(props.clickId, agent.principal_id);
+    return { handle: name };
+  }
+
+  async listMembers(): Promise<Array<{ handle: string; name: string; role: string; created_at: number }>> {
+    return this.ctx.storage.sql
+      .exec<{ handle: string; name: string; role: string; created_at: number }>(
+        `SELECT a.handle, a.name, p.role, a.created_at
+         FROM agents a JOIN principals p ON p.id = a.principal_id
+         ORDER BY a.created_at`,
+      )
+      .toArray();
+  }
+
+  tokenHashesForPrincipal(principalId: string): string[] {
+    return this.ctx.storage.sql
+      .exec<{ token_hash: string }>(`SELECT token_hash FROM api_tokens WHERE principal_id = ?`, principalId)
+      .toArray()
+      .map((row) => row.token_hash);
+  }
+
+  private deleteAgent(agentId: string, principalId: string): void {
+    this.ctx.storage.transactionSync(() => {
+      this.ctx.storage.sql.exec(`DELETE FROM subscriptions WHERE agent_id = ?`, agentId);
+      this.ctx.storage.sql.exec(`DELETE FROM api_tokens WHERE principal_id = ?`, principalId);
+      this.ctx.storage.sql.exec(`DELETE FROM agents WHERE id = ?`, agentId);
+    });
+  }
+
+  private meta(): { email: string; click_key: string; admin_principal: string } | undefined {
+    return this.ctx.storage.sql
+      .exec<{ email: string; click_key: string; admin_principal: string }>(
+        `SELECT email, click_key, admin_principal FROM click_meta WHERE id = 1`,
+      )
+      .toArray()[0];
+  }
+
+  private requireMeta(): { email: string; click_key: string; admin_principal: string } {
+    const meta = this.meta();
+    if (!meta) throw new ClickError("This click is not initialized.");
+    return meta;
+  }
+
+  private assertAdmin(role: Role): void {
+    if (role !== "admin" && role !== "operator") throw new ClickError("Only a click admin can do that.");
   }
 
   private requireAgent(principalId: string): AgentRow {

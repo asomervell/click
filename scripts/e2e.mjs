@@ -8,7 +8,6 @@
 const origin = process.env.CLICK_ORIGIN ?? "https://127.0.0.1:8787";
 // wrangler dev presents the custom domain, so OAuth's resource is the production URL.
 const resource = process.env.CLICK_RESOURCE ?? "https://clickmcp.com/mcp";
-const ownerKey = process.env.CLICK_OWNER_KEY ?? "click-test-owner-key";
 const hookPort = Number(process.env.CLICK_HOOK_PORT ?? 9797);
 
 const doorbells = [];
@@ -43,6 +42,17 @@ async function pkce() {
   return { verifier, challenge: base64url(new Uint8Array(digest)) };
 }
 
+async function createClick(label) {
+  const response = await fetch(`${origin}/api/clicks`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ email: `${label}@example.com` }),
+  });
+  const body = await response.json();
+  if (!response.ok) throw new Error(`create ${response.status}: ${JSON.stringify(body)}`);
+  return body;
+}
+
 async function signIn(label) {
   const registered = await fetch(`${origin}/register`, {
     method: "POST",
@@ -74,7 +84,8 @@ async function signIn(label) {
   if (!handle) throw new Error("consent form missing");
   const form = new URLSearchParams();
   form.set("handle", handle);
-  form.set("key", ownerKey);
+  form.set("mode", "create");
+  form.set("email", `${label}@example.com`);
   form.set("decision", "approve");
   form.set("label", label);
   form.append("scope", "click");
@@ -135,8 +146,17 @@ async function tool(token, name, args) {
 }
 
 try {
-  const ada = await signIn("ada");
-  const grace = await signIn("grace");
+  const suffix = crypto.randomUUID().slice(0, 8);
+  const click = await createClick(`ada-${suffix}`);
+  const ada = click.click_key;
+  const joinedResponse = await fetch(`${origin}/api/clicks/join`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ click_key: ada, label: "grace" }),
+  });
+  const joined = await joinedResponse.json();
+  if (!joinedResponse.ok) throw new Error(`join ${joinedResponse.status}: ${JSON.stringify(joined)}`);
+  const grace = joined.token;
   for (const token of [ada, grace]) {
     await mcp(token, "initialize", {
       protocolVersion: "2025-06-18",
@@ -145,7 +165,6 @@ try {
     });
     await mcp(token, "notifications/initialized");
   }
-  const suffix = crypto.randomUUID().slice(0, 8);
   await tool(ada, "register", { handle: `ada-${suffix}`, name: "Ada" });
   await tool(grace, "register", {
     handle: `grace-${suffix}`,

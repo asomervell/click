@@ -1,7 +1,18 @@
 import { createProvider } from "./provider";
+import { agentAuthMetadata, protectedResource } from "./site";
 import { PRODUCTION_ORIGIN } from "./types";
 
 export { ClickHub } from "./hub";
+export { ClickDirectory } from "./directory";
+
+async function withAgentAuth(response: Response, origin: string): Promise<Response> {
+  if (!response.ok) return response;
+  const metadata = await response.json() as Record<string, unknown>;
+  metadata.agent_auth = agentAuthMetadata(origin);
+  const headers = new Headers(response.headers);
+  headers.set("content-type", "application/json; charset=utf-8");
+  return new Response(JSON.stringify(metadata), { status: response.status, headers });
+}
 
 function originOf(request: Request): string | null {
   try {
@@ -17,8 +28,21 @@ export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     const origin = originOf(request);
     if (!origin) return new Response("Bad request", { status: 400 });
+    const path = new URL(request.url).pathname;
+    if (path === "/.well-known/oauth-protected-resource") {
+      return Response.json(protectedResource(origin));
+    }
     try {
-      return await createProvider(origin).fetch(request, env, ctx);
+      let response = await createProvider(origin).fetch(request, env, ctx);
+      if (path === "/.well-known/openid-configuration" && response.status === 404) {
+        const alias = new URL(request.url);
+        alias.pathname = "/.well-known/oauth-authorization-server";
+        response = await createProvider(origin).fetch(new Request(alias, request), env, ctx);
+      }
+      if (path === "/.well-known/oauth-authorization-server" || path === "/.well-known/openid-configuration") {
+        return withAgentAuth(response, origin);
+      }
+      return response;
     } catch (error) {
       console.error(JSON.stringify({
         message: "request_failed",

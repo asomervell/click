@@ -4,15 +4,12 @@ import {
   getOAuthApi,
   type OAuthHelpers,
 } from "@cloudflare/workers-oauth-provider";
-import { ownerKeyConfigured, ownerKeyMatches, sha256Hex } from "./crypto";
-import { getHub } from "./hub";
+import { acceptSignup } from "./clicks";
+import { ClickError } from "./types";
 import { escapeHtml, htmlResponse, page } from "./pages";
 import { providerOptions } from "./provider";
-import { cleanLabel } from "./validate";
 
 function oauth(request: Request, env: Env): OAuthHelpers {
-  // A fresh helper per request. The library caches the first one on env, which
-  // would pin every later sign-in to whichever host was hit first.
   return getOAuthApi(providerOptions(new URL(request.url).origin), env);
 }
 
@@ -22,10 +19,6 @@ function sameOrigin(request: Request): boolean {
 }
 
 export async function handleAuthorize(request: Request, env: Env): Promise<Response> {
-  if (!ownerKeyConfigured(env.OWNER_KEY_HASH)) {
-    console.error(JSON.stringify({ message: "owner_key_unconfigured" }));
-    return htmlResponse(page("Click", `<h1>Click</h1><p>The owner key hash is not set. Run <code>wrangler secret put OWNER_KEY_HASH</code>.</p>`), 500);
-  }
   const api = oauth(request, env);
   try {
     if (request.method === "GET") return await showConsent(request, api);
@@ -55,16 +48,20 @@ async function showConsent(request: Request, api: OAuthHelpers): Promise<Respons
   const scopeFields = scopes
     .map((scope) => `<label><input type="checkbox" name="scope" value="${escapeHtml(scope)}" checked> ${escapeHtml(scope)}</label>`)
     .join("");
-  const body = `<h1>Sign in to Click</h1>
-    <p>Allow <strong>${escapeHtml(details.clientName)}</strong> to use the mailbox as its own agent.</p>
+  const body = `<h1>Join Click</h1>
+    <p>Allow <strong>${escapeHtml(details.clientName)}</strong> to use one click as its own agent.</p>
     ${domain}
     <p>Access will be sent to <strong>${escapeHtml(details.redirectHost)}</strong>.</p>
     ${loopback}
     <form method="post">
       <input type="hidden" name="handle" value="${escapeHtml(consent.handle)}">
       ${scopeFields}
-      <label for="key">Owner key or invite</label>
-      <input id="key" name="key" type="password" autocomplete="current-password" required>
+      <label><input type="radio" name="mode" value="create" checked> Create a click</label>
+      <label><input type="radio" name="mode" value="join"> Join with a click key or invite</label>
+      <label for="email">Contact email, if you are creating a click</label>
+      <input id="email" name="email" type="email" autocomplete="email">
+      <label for="key">Click key or invite, if you are joining</label>
+      <input id="key" name="key" type="password" autocomplete="off">
       <label for="label">Label for this connection (optional)</label>
       <input id="label" name="label" maxlength="80" autocomplete="off">
       <p>
@@ -72,8 +69,8 @@ async function showConsent(request: Request, api: OAuthHelpers): Promise<Respons
         <button class="secondary" name="decision" value="deny">Deny</button>
       </p>
     </form>
-    <p class="muted">The key proves you may join. This connection then gets its own identity, not the owner key. A client that cannot do OAuth can <a href="/keys">mint a bearer token</a>.</p>`;
-  return htmlResponse(page("Sign in to Click", body), 200, consent.headers);
+    <p class="muted">Creating a click shows its key once after you return to the agent. Call show_key later to see it again. Agents without OAuth can POST /api/clicks.</p>`;
+  return htmlResponse(page("Join Click", body), 200, consent.headers);
 }
 
 async function submitConsent(request: Request, env: Env, api: OAuthHelpers): Promise<Response> {
@@ -86,25 +83,30 @@ async function submitConsent(request: Request, env: Env, api: OAuthHelpers): Pro
     const denied = await api.denyConsent(request, handle);
     return new Response(null, { status: 302, headers: denied.headers });
   }
-  const key = String(form.get("key") ?? "");
-  let label: string | null;
+  const mode = String(form.get("mode") ?? "create");
+  const email = String(form.get("email") ?? "").trim();
+  const key = String(form.get("key") ?? "").trim();
+  const label = String(form.get("label") ?? "");
+  let principal;
   try {
-    label = cleanLabel(form.get("label"));
+    principal = await acceptSignup(env, mode === "create"
+      ? { email, label }
+      : key.startsWith("clk_inv_")
+        ? { invite: key, label }
+        : { clickKey: key, label });
   } catch (error) {
-    const message = error instanceof Error ? error.message : "Invalid label";
+    const message = error instanceof ClickError ? error.message : "Could not open that click.";
     return retry(handle, message);
   }
-  const principal = await acceptCredential(env, key, label);
-  if (!principal) return retry(handle, "That key or invite was not recognized.");
   const scope = form.getAll("scope").map(String).filter((item) => item === "click" || item === "offline_access");
   if (!scope.includes("click")) return retry(handle, "Click access has to stay selected.");
   const approved = await api.approveConsent(request, handle, { scope });
   const { redirectTo } = await api.completeAuthorization({
     request: approved.request,
     userId: principal.principalId,
-    metadata: { label },
+    metadata: { clickId: principal.clickId },
     scope: approved.request.scope,
-    props: principal,
+    props: { principalId: principal.principalId, clickId: principal.clickId, role: principal.role },
   });
   approved.headers.set("location", redirectTo);
   approved.headers.set("cache-control", "no-store");
@@ -113,22 +115,18 @@ async function submitConsent(request: Request, env: Env, api: OAuthHelpers): Pro
 }
 
 function retry(handle: string, message: string): Response {
-  const body = `<h1>Sign in to Click</h1>
+  const body = `<h1>Join Click</h1>
     <p class="error">${escapeHtml(message)}</p>
     <form method="post">
       <input type="hidden" name="handle" value="${escapeHtml(handle)}">
       <input type="hidden" name="scope" value="click">
-      <label for="key">Owner key or invite</label>
-      <input id="key" name="key" type="password" autocomplete="current-password" required>
-      <label for="label">Label for this connection (optional)</label>
-      <input id="label" name="label" maxlength="80" autocomplete="off">
+      <label><input type="radio" name="mode" value="create" checked> Create a click</label>
+      <label><input type="radio" name="mode" value="join"> Join with a click key or invite</label>
+      <label for="email">Contact email</label>
+      <input id="email" name="email" type="email">
+      <label for="key">Click key or invite</label>
+      <input id="key" name="key" type="password">
       <p><button name="decision" value="approve">Allow</button></p>
     </form>`;
-  return htmlResponse(page("Sign in to Click", body), 200);
-}
-
-async function acceptCredential(env: Env, key: string, label: string | null) {
-  if (await ownerKeyMatches(key, env.OWNER_KEY_HASH)) return getHub(env).createMember(label);
-  if (!key.startsWith("clk_inv_")) return null;
-  return getHub(env).consumeInviteHash(await sha256Hex(key), label);
+  return htmlResponse(page("Join Click", body), 200);
 }

@@ -1,9 +1,9 @@
 import { SELF } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
-import { callTool, handle, initialize, LOCAL, OWNER_KEY, signIn } from "./helpers";
+import { callTool, createClick, handle, initialize, LOCAL, OWNER_KEY, signIn } from "./helpers";
 
 describe("auth", () => {
-  it("advertises OAuth metadata for the request origin", async () => {
+  it("advertises OAuth metadata for the request origin, including the bare path", async () => {
     const denied = await SELF.fetch("https://clickmcp.com/mcp", {
       method: "POST",
       headers: { accept: "application/json, text/event-stream", "content-type": "application/json" },
@@ -18,89 +18,72 @@ describe("auth", () => {
     expect(body.resource).toBe("https://clickmcp.com/mcp");
     expect(body.authorization_servers).toContain("https://clickmcp.com");
 
+    const bare = await SELF.fetch("https://clickmcp.com/.well-known/oauth-protected-resource");
+    const bareBody = await bare.json() as { resource?: string };
+    expect(bare.status).toBe(200);
+    expect(bareBody.resource).toBe("https://clickmcp.com/mcp");
+
     const local = await SELF.fetch(`${LOCAL}/.well-known/oauth-protected-resource/mcp`);
     const localBody = await local.json() as { resource?: string; authorization_servers?: string[] };
     expect(localBody.resource).toBe(`${LOCAL}/mcp`);
     expect(localBody.authorization_servers).toContain(LOCAL);
   });
 
-  it("accepts the owner key on the production host", async () => {
-    await initialize("https://clickmcp.com", OWNER_KEY);
-    const who = await callTool("https://clickmcp.com", OWNER_KEY, "whoami") as { role: string };
-    expect(who.role).toBe("owner");
-  });
-
-  it("signs in with the owner key and registers an agent", async () => {
-    const token = await signIn(LOCAL, OWNER_KEY);
+  it("signs in by creating a click and registers an agent", async () => {
+    const token = await signIn(LOCAL, { email: `ada-${crypto.randomUUID().slice(0, 8)}@example.com` });
     await initialize(LOCAL, token);
     const name = handle("ada");
     const profile = await callTool(LOCAL, token, "register", {
       handle: name,
       name: "Ada",
       description: "first agent",
-    }) as { agent: { handle: string }; role: string };
-    expect(profile.role).toBe("member");
+    }) as { agent: { handle: string }; role: string; click_id: string };
+    expect(profile.role).toBe("admin");
     expect(profile.agent.handle).toBe(name);
+    expect(profile.click_id).toBeTruthy();
+    const key = await callTool(LOCAL, token, "show_key") as { click_key: string };
+    expect(key.click_key.startsWith("clk_")).toBe(true);
   });
 
-  it("rejects a bad key and accepts an invite once", async () => {
-    const page = await SELF.fetch(`${LOCAL}/authorize?response_type=code&client_id=missing`, { redirect: "manual" });
-    expect(page.status).toBeGreaterThanOrEqual(400);
-
-    const owner = OWNER_KEY;
-    await initialize(LOCAL, owner);
-    const invite = await callTool(LOCAL, owner, "create_invite", { label: "guest" }) as { invite: string };
-    const guest = await signIn(LOCAL, invite.invite);
+  it("joins with an invite once", async () => {
+    const created = await createClick();
+    await initialize(LOCAL, created.click_key);
+    const invite = await callTool(LOCAL, created.click_key, "create_invite", { label: "guest" }) as { invite: string };
+    const guest = await signIn(LOCAL, { key: invite.invite });
     await initialize(LOCAL, guest);
     const who = await callTool(LOCAL, guest, "whoami") as { role: string; agent: null };
     expect(who.role).toBe("member");
     expect(who.agent).toBeNull();
-    await expect(signIn(LOCAL, invite.invite)).rejects.toThrow(/not recognized|invite/i);
+    await expect(signIn(LOCAL, { key: invite.invite })).rejects.toThrow(/not recognized/i);
   });
 
-  it("lets the owner key mint a bearer and keeps members from minting", async () => {
-    await initialize(LOCAL, OWNER_KEY);
+  it("mints a bearer for a member and lets the optional owner key administer a click", async () => {
+    const created = await createClick();
+    await initialize(LOCAL, created.click_key);
     const name = handle("claude");
-    const minted = await callTool(LOCAL, OWNER_KEY, "mint_token", { label: "claude", handle: name }) as {
+    const minted = await callTool(LOCAL, created.click_key, "mint_token", { label: "claude", handle: name }) as {
       token: string;
       handle: string;
     };
     expect(minted.handle).toBe(name);
     await initialize(LOCAL, minted.token);
-    const who = await callTool(LOCAL, minted.token, "whoami") as { role: string; agent: { handle: string } };
-    expect(who.role).toBe("member");
-    expect(who.agent.handle).toBe(name);
-    await expect(callTool(LOCAL, minted.token, "mint_token", {})).rejects.toThrow(/owner key/i);
-    const denied = await SELF.fetch(`${LOCAL}/mcp`, {
-      method: "POST",
-      headers: {
-        authorization: "Bearer not-a-real-token",
-        accept: "application/json, text/event-stream",
-        "content-type": "application/json",
-      },
-      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "initialize", params: {} }),
-    });
-    expect(denied.status).toBe(401);
+    await expect(callTool(LOCAL, minted.token, "mint_token", {})).rejects.toThrow(/admin/i);
+
+    await initialize("https://clickmcp.com", OWNER_KEY, created.click_id);
+    const who = await callTool("https://clickmcp.com", OWNER_KEY, "whoami", {}, created.click_id) as { role: string };
+    expect(who.role).toBe("operator");
   });
 
-  it("mints a bearer token from the keys page", async () => {
-    const name = handle("page");
-    const form = new URLSearchParams();
-    form.set("key", OWNER_KEY);
-    form.set("action", "mint");
-    form.set("handle", name);
-    const response = await SELF.fetch(`${LOCAL}/keys`, {
-      method: "POST",
-      headers: {
-        "content-type": "application/x-www-form-urlencoded",
-        origin: LOCAL,
-        host: "127.0.0.1:8787",
-      },
-      body: form,
-    });
-    const html = await response.text();
-    expect(response.status).toBe(200);
-    expect(html).toContain("clk_");
-    expect(html).not.toContain(OWNER_KEY);
+  it("serves the onboarding page and markdown", async () => {
+    const page = await SELF.fetch(`${LOCAL}/`, { headers: { host: "127.0.0.1:8787" } });
+    const html = await page.text();
+    expect(page.status).toBe(200);
+    expect(html).toContain("Onboard your agent");
+    expect(page.headers.get("link") ?? "").toContain("api-catalog");
+    const markdown = await SELF.fetch(`${LOCAL}/`, { headers: { accept: "text/markdown", host: "127.0.0.1:8787" } });
+    expect(markdown.headers.get("content-type")).toContain("text/markdown");
+    expect(await markdown.text()).toContain("click key");
+    const robots = await SELF.fetch(`${LOCAL}/robots.txt`);
+    expect(await robots.text()).toContain("Content-Signal:");
   });
 });

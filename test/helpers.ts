@@ -34,20 +34,21 @@ export async function parseMcp(response: Response): Promise<{ status: number; bo
   return { status: response.status, text, body: JSON.parse(raw) as Record<string, unknown> };
 }
 
-function mcpHeaders(origin: string, token: string): Headers {
+function mcpHeaders(origin: string, token: string, clickId?: string): Headers {
   const headers = new Headers({
     authorization: `Bearer ${token}`,
     "content-type": "application/json",
     accept: "application/json, text/event-stream",
     host: new URL(origin).host,
   });
+  if (clickId) headers.set("x-click-id", clickId);
   return headers;
 }
 
-export async function mcpCall(origin: string, token: string, method: string, params?: unknown, id = 1): Promise<Record<string, unknown>> {
+export async function mcpCall(origin: string, token: string, method: string, params?: unknown, id = 1, clickId?: string): Promise<Record<string, unknown>> {
   const response = await SELF.fetch(`${origin}/mcp`, {
     method: "POST",
-    headers: mcpHeaders(origin, token),
+    headers: mcpHeaders(origin, token, clickId),
     body: JSON.stringify({ jsonrpc: "2.0", id, method, params }),
   });
   const parsed = await parseMcp(response);
@@ -55,30 +56,43 @@ export async function mcpCall(origin: string, token: string, method: string, par
   return parsed.body;
 }
 
-export async function initialize(origin: string, token: string): Promise<void> {
+export async function initialize(origin: string, token: string, clickId?: string): Promise<void> {
   const init = await mcpCall(origin, token, "initialize", {
     protocolVersion: "2025-06-18",
     capabilities: {},
     clientInfo: { name: "click-test", version: "0" },
-  });
+  }, 1, clickId);
   const result = init.result as { protocolVersion?: string } | undefined;
   if (!result?.protocolVersion) throw new Error(`initialize failed: ${JSON.stringify(init)}`);
   await SELF.fetch(`${origin}/mcp`, {
     method: "POST",
-    headers: mcpHeaders(origin, token),
+    headers: mcpHeaders(origin, token, clickId),
     body: JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized" }),
   });
 }
 
-export async function callTool(origin: string, token: string, name: string, args: Record<string, unknown> = {}): Promise<unknown> {
-  const body = await mcpCall(origin, token, "tools/call", { name, arguments: args }, 2);
+export async function callTool(origin: string, token: string, name: string, args: Record<string, unknown> = {}, clickId?: string): Promise<unknown> {
+  const body = await mcpCall(origin, token, "tools/call", { name, arguments: args }, 2, clickId);
   const result = body.result as { content?: Array<{ text?: string }>; isError?: boolean } | undefined;
   const text = result?.content?.[0]?.text ?? "";
   if (result?.isError) throw new Error(text);
   return JSON.parse(text) as unknown;
 }
 
-export async function signIn(origin: string, credential: string): Promise<string> {
+export async function createClick(origin = LOCAL): Promise<{ click_id: string; click_key: string; principal_id: string }> {
+  const response = await SELF.fetch(`${origin}/api/clicks`, {
+    method: "POST",
+    headers: { "content-type": "application/json", host: new URL(origin).host },
+    body: JSON.stringify({ email: `person-${crypto.randomUUID().slice(0, 8)}@example.com` }),
+  });
+  const body = await response.json() as { click_id?: string; click_key?: string; principal_id?: string; error?: string };
+  if (!response.ok || !body.click_key || !body.click_id || !body.principal_id) {
+    throw new Error(`create click ${response.status}: ${JSON.stringify(body)}`);
+  }
+  return { click_id: body.click_id, click_key: body.click_key, principal_id: body.principal_id };
+}
+
+export async function signIn(origin: string, input: { email?: string; key?: string }): Promise<string> {
   const registered = await SELF.fetch(new Request(`${origin}/register`, {
     method: "POST",
     headers: { "content-type": "application/json" },
@@ -114,7 +128,9 @@ export async function signIn(origin: string, credential: string): Promise<string
   if (!handle) throw new Error(`consent handle missing: ${html}`);
   const form = new URLSearchParams();
   form.set("handle", handle);
-  form.set("key", credential);
+  form.set("mode", input.email ? "create" : "join");
+  if (input.email) form.set("email", input.email);
+  if (input.key) form.set("key", input.key);
   form.set("decision", "approve");
   form.set("label", "test-bot");
   form.append("scope", "click");
