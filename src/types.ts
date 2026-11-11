@@ -8,6 +8,16 @@ export type ClickProps = {
   role: Role;
 };
 
+/** One click an identity belongs to. accountId is the identity's home principal id. */
+export type Membership = {
+  accountId: string;
+  clickId: string;
+  principalId: string;
+  role: Role;
+  name: string | null;
+  home: boolean;
+};
+
 export class ClickError extends Error {
   constructor(message: string) {
     super(message);
@@ -25,6 +35,7 @@ export type PublicAgent = {
 export type Profile = {
   principal_id: string;
   click_id: string;
+  click_name: string | null;
   role: Role;
   label: string | null;
   email: string | null;

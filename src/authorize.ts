@@ -5,8 +5,9 @@ import {
   type OAuthHelpers,
 } from "@cloudflare/workers-oauth-provider";
 import { base64url, sha256Hex } from "./crypto";
-import { acceptSignup } from "./clicks";
-import { ClickError } from "./types";
+import { joinWithInvite, signInWithKey, startCreateClick, verifyCreateClick } from "./clicks";
+import { ClickError, type ClickProps } from "./types";
+import { cleanLabel } from "./validate";
 import { escapeHtml, htmlResponse, page } from "./pages";
 import { providerOptions } from "./provider";
 
@@ -97,10 +98,12 @@ async function showConsent(request: Request, api: OAuthHelpers): Promise<Respons
       <input type="hidden" name="csrf" value="${escapeHtml(csrf)}">
       ${scopeFields}
       <label><input type="radio" name="mode" value="create" checked> Create a click</label>
-      <label><input type="radio" name="mode" value="join"> Join with a click key or invite</label>
-      <label for="email">Contact email, if you are creating a click</label>
+      <label><input type="radio" name="mode" value="join"> Join a click with an invite</label>
+      <label for="email">Your email, if you are creating a click. We email you a 6-digit code.</label>
       <input id="email" name="email" type="email" autocomplete="email">
-      <label for="key">Click key or invite, if you are joining</label>
+      <label for="click_name">Click name (optional)</label>
+      <input id="click_name" name="click_name" maxlength="60" autocomplete="off">
+      <label for="key">Invite, if you are joining. Ask the click's admin for one.</label>
       <input id="key" name="key" type="password" autocomplete="off">
       <label for="label">Label for this connection (optional)</label>
       <input id="label" name="label" maxlength="80" autocomplete="off">
@@ -109,7 +112,7 @@ async function showConsent(request: Request, api: OAuthHelpers): Promise<Respons
         <button class="secondary" name="decision" value="deny">Deny</button>
       </p>
     </form>
-    <p class="muted">Creating a click shows its key once after you return to the agent. Call show_key later to see it again. Agents without OAuth can POST /api/clicks.</p>`;
+    <p class="muted">To join a click, ask its admin for an invite. Admins can also paste their click key here to sign in as the admin. Agents without OAuth can POST /api/v1/clicks.</p>`;
   const headers = new Headers(consent.headers);
   headers.append("Set-Cookie", csrfCookie(csrfName, csrf));
   return htmlResponse(page("Join Click", body), 200, headers);
@@ -135,19 +138,45 @@ async function submitConsent(request: Request, env: Env, api: OAuthHelpers): Pro
   const mode = String(form.get("mode") ?? "create");
   const email = String(form.get("email") ?? "").trim();
   const key = String(form.get("key") ?? "").trim();
-  const label = String(form.get("label") ?? "");
-  let principal;
+  const label = cleanLabelSafe(String(form.get("label") ?? ""));
+  const scopes = form.getAll("scope").map(String).filter((item) => item === "click" || item === "offline_access");
+  let principal: ClickProps;
   try {
-    principal = await acceptSignup(env, mode === "create"
-      ? { email, label }
-      : key.startsWith("clk_inv_")
-        ? { invite: key, label }
-        : { clickKey: key, label });
+    if (mode === "verify") {
+      const created = await verifyCreateClick(env, String(form.get("pending_id") ?? ""), String(form.get("code") ?? ""));
+      principal = { principalId: created.principal_id, clickId: created.click_id, role: "admin" };
+    } else if (mode === "create") {
+      const started = await startCreateClick(env, { email, name: form.get("click_name"), request, accountId: null });
+      if (started.status === "verification_sent") {
+        return codeForm({ handle, csrf: presented, pendingId: started.pending_id, email: started.email, scopes, label, message: null });
+      }
+      principal = { principalId: started.principal_id, clickId: started.click_id, role: "admin" };
+    } else if (key.startsWith("clk_inv_")) {
+      const joined = await joinWithInvite(env, key, label);
+      principal = { principalId: joined.principalId, clickId: joined.clickId, role: joined.role };
+    } else if (key) {
+      principal = await signInWithKey(env, key);
+    } else {
+      throw new ClickError("Paste the invite you got from the click admin.");
+    }
   } catch (error) {
-    const message = error instanceof ClickError ? error.message : "Could not open that click.";
+    const message = error instanceof ClickError || (error instanceof Error && !/sql|durable object|internal/i.test(error.message))
+      ? (error as Error).message
+      : "Could not open that click.";
+    if (mode === "verify") {
+      return codeForm({
+        handle,
+        csrf: presented,
+        pendingId: String(form.get("pending_id") ?? ""),
+        email: String(form.get("email") ?? ""),
+        scopes,
+        label,
+        message,
+      });
+    }
     return retry(handle, presented, message);
   }
-  const scope = form.getAll("scope").map(String).filter((item) => item === "click" || item === "offline_access");
+  const scope = scopes;
   if (!scope.includes("click")) return retry(handle, presented, "Click access has to stay selected.");
   const approved = await api.approveConsent(request, handle, { scope });
   const { redirectTo } = await api.completeAuthorization({
@@ -172,15 +201,56 @@ function retry(handle: string, csrf: string, message: string): Response {
       <input type="hidden" name="csrf" value="${escapeHtml(csrf)}">
       <input type="hidden" name="scope" value="click">
       <label><input type="radio" name="mode" value="create" checked> Create a click</label>
-      <label><input type="radio" name="mode" value="join"> Join with a click key or invite</label>
-      <label for="email">Contact email</label>
+      <label><input type="radio" name="mode" value="join"> Join a click with an invite</label>
+      <label for="email">Your email. We email you a 6-digit code.</label>
       <input id="email" name="email" type="email">
-      <label for="key">Click key or invite</label>
+      <label for="click_name">Click name (optional)</label>
+      <input id="click_name" name="click_name" maxlength="60">
+      <label for="key">Invite from the click's admin</label>
       <input id="key" name="key" type="password">
       <p><button name="decision" value="approve">Allow</button></p>
     </form>
     <p class="muted"><button type="button" onclick="history.back()">Go back</button> <a href="/">Click home</a></p>`;
   return htmlResponse(page("Join Click", body), 400);
+}
+
+function codeForm(input: {
+  handle: string;
+  csrf: string;
+  pendingId: string;
+  email: string;
+  scopes: string[];
+  label: string | null;
+  message: string | null;
+}): Response {
+  const scopeFields = (input.scopes.length > 0 ? input.scopes : ["click"])
+    .map((scope) => `<input type="hidden" name="scope" value="${escapeHtml(scope)}">`)
+    .join("");
+  const body = `<h1>Check your email</h1>
+    ${input.message ? `<p class="error">${escapeHtml(input.message)}</p>` : ""}
+    <p>We sent a 6-digit code to <strong>${escapeHtml(input.email)}</strong>. It expires in 15 minutes. The click is created only after you enter it.</p>
+    <form method="post">
+      <input type="hidden" name="handle" value="${escapeHtml(input.handle)}">
+      <input type="hidden" name="csrf" value="${escapeHtml(input.csrf)}">
+      <input type="hidden" name="mode" value="verify">
+      <input type="hidden" name="pending_id" value="${escapeHtml(input.pendingId)}">
+      <input type="hidden" name="email" value="${escapeHtml(input.email)}">
+      <input type="hidden" name="label" value="${escapeHtml(input.label ?? "")}">
+      ${scopeFields}
+      <label for="code">Code</label>
+      <input id="code" name="code" inputmode="numeric" pattern="[0-9]{6}" maxlength="6" autocomplete="one-time-code" required>
+      <p><button name="decision" value="approve">Verify and allow</button></p>
+    </form>
+    <p class="muted">No email? Check spam, or go back and start again.</p>`;
+  return htmlResponse(page("Check your email", body), input.message ? 400 : 200);
+}
+
+function cleanLabelSafe(raw: string): string | null {
+  try {
+    return cleanLabel(raw);
+  } catch {
+    return null;
+  }
 }
 
 function signInProblem(message: string, status = 403, extra?: HeadersInit): Response {

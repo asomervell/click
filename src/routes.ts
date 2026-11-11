@@ -1,5 +1,5 @@
 import { handleAuthorize } from "./authorize";
-import { getDirectory } from "./directory";
+import { loadIdentity } from "./clicks";
 import { handleSite } from "./site";
 import { handleHttpApi } from "./http-api";
 import { handleKeys } from "./keys";
@@ -8,10 +8,11 @@ import type { ClickProps, Role } from "./types";
 
 export async function apiFetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
   const props = readProps(ctx);
-  if (!(await getDirectory(env).clickExists(props.clickId))) {
-    return Response.json({ error: "This click was deleted." }, { status: 401 });
+  const identity = await loadIdentity(env, props);
+  if (!identity) {
+    return Response.json({ error: "This click was deleted, or this connection left it." }, { status: 401 });
   }
-  return mcpResponse(request, env, ctx, props);
+  return mcpResponse(request, env, ctx, identity);
 }
 
 export async function defaultFetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {

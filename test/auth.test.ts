@@ -154,7 +154,9 @@ describe("auth", () => {
       body: JSON.stringify({ email: `rate-${crypto.randomUUID().slice(0, 8)}@example.com` }),
     });
     expect(created.headers.get("ratelimit")).toBeTruthy();
-    expect(created.status).toBe(201);
+    expect(created.status).toBe(202);
+    expect(openapi.paths["/api/v1/clicks/verify"]?.post?.responses["201"]).toBeTruthy();
+    expect(openapi.paths["/api/v1/invites/{invite_id}"]?.delete?.responses["200"]).toBeTruthy();
     const register = await SELF.fetch(`${LOCAL}/register`);
     expect(register.status).toBe(200);
     const card = await (await SELF.fetch(`${LOCAL}/.well-known/mcp/server-card.json`)).json() as { tools: Array<{ name: string }> };

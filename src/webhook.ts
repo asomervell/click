@@ -8,17 +8,21 @@ export type Doorbell = {
   pending: number;
   url: string;
   key: string;
+  clickId?: string | null;
+  clickName?: string | null;
 };
 
 export type WakeOutcome =
   | { ok: true }
   | { ok: false; error: string };
 
-export function doorbellBody(doorbell: Pick<Doorbell, "handle" | "pending">): string {
+export function doorbellBody(doorbell: Pick<Doorbell, "handle" | "pending" | "clickId" | "clickName">): string {
   return JSON.stringify({
     type: "click.doorbell",
     agent: doorbell.handle,
     pending: doorbell.pending,
+    click: doorbell.clickId ?? null,
+    click_name: doorbell.clickName ?? null,
   });
 }
 

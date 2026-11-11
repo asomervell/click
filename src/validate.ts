@@ -104,3 +104,18 @@ export function clampLimit(value: number | undefined, max = 50): number {
   if (!Number.isInteger(value) || value < 1) throw new ClickError("Limit must be a positive integer.");
   return Math.min(value, max);
 }
+
+/** Optional human-readable click name. 1–60 printable characters. */
+export function cleanClickName(value: unknown): string | null {
+  if (value == null) return null;
+  if (typeof value !== "string") throw new ClickError("Click name must be a string.");
+  const name = value.replace(/[\u0000-\u001f\u007f]/g, "").replace(/\s+/g, " ").trim();
+  if (!name) return null;
+  if (name.length > 60) throw new ClickError("Click name must be 60 characters or fewer.");
+  if (!/[\p{L}\p{N}]/u.test(name)) throw new ClickError("Click name needs at least one letter or digit.");
+  return name;
+}
+
+export function clickSlug(name: string): string {
+  return name.toLowerCase().normalize("NFKD").replace(/[^\p{L}\p{N}]+/gu, "-").replace(/^-+|-+$/g, "");
+}

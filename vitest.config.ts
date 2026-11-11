@@ -11,6 +11,8 @@ export default defineConfig({
       miniflare: {
         bindings: {
           OWNER_KEY_HASH: ownerKeyHash,
+          // Test-only sender: verification codes land in src/email.ts testOutbox.
+          TEST_EMAIL_OUTBOX: "1",
         },
       },
     }),

@@ -1,28 +1,61 @@
-import { createClick, deleteClick, joinWithKey, resolveBearer, rotateClickKey } from "./clicks";
+import {
+  deleteClick,
+  type Identity,
+  joinWithInvite,
+  joinWithInviteToken,
+  listClicks,
+  loadIdentity,
+  renameClick,
+  resolveBearer,
+  rotateClickKey,
+  selectClick,
+  startCreateClick,
+  verifyCreateClick,
+} from "./clicks";
 import { getHub } from "./hub";
-import { ClickError, type ClickProps } from "./types";
+import { ClickError } from "./types";
+import { cleanLabel } from "./validate";
 
 export async function handleHttpApi(request: Request, env: Env, ctx: ExecutionContext): Promise<Response | null> {
   const url = new URL(request.url);
   const path = versionedPath(url.pathname);
   if (!path) return null;
   try {
+    const header = request.headers.get("authorization") ?? "";
+    const token = header.toLowerCase().startsWith("bearer ") ? header.slice(7).trim() : "";
+    const home = token ? await resolveBearer(env, token, request) : null;
     if (request.method === "POST" && path === "/api/clicks") {
       const body = await readJson(request);
-      const created = await createClick(env, String(body.email ?? ""));
-      return json(created, 201);
+      // A signed-in agent that creates a click gets it added to its own memberships.
+      const accountId = home && home.role !== "operator" ? home.principalId : null;
+      const started = await startCreateClick(env, { email: String(body.email ?? ""), name: body.name, request, accountId });
+      return json(started, started.status === "created" ? 201 : 202);
+    }
+    if (request.method === "POST" && path === "/api/clicks/verify") {
+      const body = await readJson(request);
+      return json(await verifyCreateClick(env, String(body.pending_id ?? ""), String(body.code ?? "")), 201);
     }
     if (request.method === "POST" && path === "/api/clicks/join") {
       const body = await readJson(request);
-      const joined = await joinWithKey(env, String(body.click_key ?? ""), body.label ? String(body.label) : null);
-      return json({ token: joined.token, click_id: joined.clickId, principal_id: joined.principalId, role: joined.role }, 201);
+      if (body.click_key != null && body.invite == null) {
+        throw new ClickError("Joining with the click key was removed: the key is the admin credential. Ask the click admin for an invite and send {\"invite\":\"clk_inv_...\"}.");
+      }
+      const label = cleanLabel(body.label);
+      if (home && home.role !== "operator") {
+        const identity = await loadIdentity(env, home);
+        if (!identity) return problem(401, "Unauthorized", "unauthorized");
+        const joined = await joinWithInvite(env, String(body.invite ?? ""), label, identity.accountId);
+        return json({ click_id: joined.clickId, name: joined.clickName, principal_id: joined.principalId, role: joined.role, added_to_existing_identity: true }, 201);
+      }
+      const joined = await joinWithInviteToken(env, String(body.invite ?? ""), label);
+      return json({ token: joined.token, click_id: joined.clickId, name: joined.clickName, principal_id: joined.principalId, role: joined.role }, 201);
     }
-    const header = request.headers.get("authorization") ?? "";
-    const token = header.toLowerCase().startsWith("bearer ") ? header.slice(7).trim() : "";
-    const props = token ? await resolveBearer(env, token, request) : null;
-    if (!props) return problem(401, "Unauthorized", "unauthorized");
-    const result = await dispatch(request, env, ctx, props, path);
-    const created = request.method === "POST" && path === "/api/tokens";
+    if (!home) return problem(401, "Unauthorized", "unauthorized");
+    const identity = await loadIdentity(env, home);
+    if (!identity) return problem(401, "Unauthorized", "unauthorized");
+    const body = request.method === "POST" || request.method === "PATCH" ? await readJson(request) : {};
+    const result = await dispatch(request, env, ctx, identity, path, url, body);
+    const created = request.method === "POST" && (path === "/api/tokens" || path === "/api/invites");
     return json(result, created ? 201 : 200);
   } catch (error) {
     const message = errorMessage(error);
@@ -51,53 +84,96 @@ function errorMessage(error: unknown): string {
 }
 
 function statusFor(message: string): number {
-  if (/too many|try again in a few|wait a minute|wait and try/i.test(message)) return 429;
+  if (/too many|try again in a few|wait a minute|wait and try|try again in an hour|try again tomorrow|wait 15 minutes/i.test(message)) return 429;
   if (message === "Unknown API route.") return 404;
   if (message === "Click failed.") return 500;
   return 400;
 }
 
-async function dispatch(request: Request, env: Env, ctx: ExecutionContext, props: ClickProps, path: string): Promise<unknown> {
+function selector(request: Request, url: URL, body: Record<string, unknown>): string | null {
+  const fromBody = typeof body.click === "string" ? body.click : null;
+  return url.searchParams.get("click") ?? request.headers.get("x-click-id") ?? fromBody;
+}
+
+function optionalString(value: unknown): string | undefined {
+  return value == null ? undefined : String(value);
+}
+
+async function dispatch(
+  request: Request,
+  env: Env,
+  ctx: ExecutionContext,
+  identity: Identity,
+  path: string,
+  url: URL,
+  body: Record<string, unknown>,
+): Promise<unknown> {
+  if (request.method === "GET" && path === "/api/clicks") return listClicks(env, identity);
+  const props = selectClick(identity, selector(request, url, body));
   const hub = getHub(env, props.clickId);
   if (request.method === "GET" && path === "/api/me") return hub.whoami(props);
   if (request.method === "PATCH" && path === "/api/me") {
-    const body = await readJson(request);
     return hub.updateProfile(props, {
-      name: body.name == null ? undefined : String(body.name),
-      description: body.description == null ? undefined : String(body.description),
-      webhook_url: body.webhook_url == null ? undefined : String(body.webhook_url),
-      webhook_key: body.webhook_key == null ? undefined : String(body.webhook_key),
+      name: optionalString(body.name),
+      description: optionalString(body.description),
+      webhook_url: optionalString(body.webhook_url),
+      webhook_key: optionalString(body.webhook_key),
       clear_webhook: body.clear_webhook === true,
     });
   }
+  if (request.method === "PATCH" && (path === "/api/click" || path === `/api/clicks/${props.clickId}`)) {
+    return renameClick(env, props, body.name);
+  }
   if (request.method === "GET" && path === "/api/agents") return hub.listAgents();
-  if (request.method === "POST" && path === "/api/agents") return hub.register(props, await readJson(request) as { handle: string });
+  if (request.method === "POST" && path === "/api/agents") {
+    return hub.register(props, {
+      handle: String(body.handle ?? ""),
+      name: optionalString(body.name),
+      description: optionalString(body.description),
+      webhook_url: optionalString(body.webhook_url),
+      webhook_key: optionalString(body.webhook_key),
+    });
+  }
   if (request.method === "DELETE" && path === "/api/agents/me") return hub.leave(props);
   if (request.method === "DELETE" && path.startsWith("/api/agents/")) {
     return hub.removeMember(props, decodeURIComponent(path.slice("/api/agents/".length)));
   }
   if (request.method === "POST" && path === "/api/messages") {
-    const result = await hub.send(props, await readJson(request) as { text: string });
-    ctx.waitUntil(hub.processWakes(Date.now()).catch(() => undefined));
-    return result;
+    const result = await hub.send(props, {
+      text: String(body.text ?? ""),
+      to: optionalString(body.to),
+      topic: optionalString(body.topic),
+      broadcast: body.broadcast === true,
+    });
+    ctx.waitUntil(hub.processWakes(Date.now(), props.clickId).catch(() => undefined));
+    return { ...result, click: props.clickId };
   }
-  if (request.method === "GET" && path === "/api/inbox") return hub.inbox(props, undefined);
+  if (request.method === "GET" && path === "/api/inbox") {
+    const limit = url.searchParams.get("limit");
+    return { click: props.clickId, click_name: props.clickName, ...(await hub.inbox(props, limit ? Number(limit) : undefined)) };
+  }
   if (request.method === "POST" && path === "/api/ack") {
-    const body = await readJson(request);
     const ids = Array.isArray(body.ids) ? body.ids.map(String) : [];
     return hub.ack(props, ids);
   }
   if (request.method === "GET" && path === "/api/key") return hub.showKey(props);
   if (request.method === "POST" && path === "/api/key/rotate") return rotateClickKey(env, props);
   if (request.method === "GET" && path === "/api/members") return hub.listMembers();
-  if (request.method === "DELETE" && path === "/api/clicks") return deleteClick(env, props);
+  if (request.method === "DELETE" && (path === "/api/clicks" || path === `/api/clicks/${props.clickId}`)) return deleteClick(env, props);
   if (request.method === "POST" && path === "/api/invites") {
-    const body = await readJson(request);
-    return hub.createInvite(props, body.label ? String(body.label) : null);
+    const hours = body.expires_in_hours == null ? undefined : Number(body.expires_in_hours);
+    return hub.createInvite(props, cleanLabel(body.label), hours);
+  }
+  if (request.method === "GET" && path === "/api/invites") {
+    return hub.listInvites(props, url.searchParams.get("include_closed") === "true");
+  }
+  if (request.method === "DELETE" && path.startsWith("/api/invites/")) {
+    const inviteId = decodeURIComponent(path.slice("/api/invites/".length));
+    if (!inviteId || inviteId.includes("/")) throw new ClickError("Unknown API route.");
+    return hub.revokeInvite(props, inviteId);
   }
   if (request.method === "GET" && path === "/api/tokens") return hub.listTokens(props);
   if (request.method === "POST" && path === "/api/tokens") {
-    const body = await readJson(request);
     return hub.mintToken(props, {
       handle: body.handle ? String(body.handle) : undefined,
       name: body.name ? String(body.name) : undefined,
