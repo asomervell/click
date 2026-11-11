@@ -17,10 +17,11 @@ body{margin:0}
 .ck-nav .links a:hover{color:var(--magenta-text)}
 
 /* Landing, as landing.html. */
-.ck-landing .hero{position:relative;min-height:680px;background:var(--ground);color:var(--ink);overflow:hidden}
+.ck-landing .hero{position:relative;display:flex;flex-direction:column;min-height:max(560px,100vh);min-height:max(560px,100svh);background:var(--ground);color:var(--ink);overflow:hidden}
 .ck-landing .hero .scene{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;object-position:60% 100%;image-rendering:pixelated}
-.ck-landing .in{position:relative;max-width:1040px;margin:0 auto;padding:var(--space-4) var(--space-5)}
-.ck-landing .copy{max-width:500px;padding-top:var(--space-7)}
+.ck-landing .in{position:relative;flex:1 0 auto;display:flex;flex-direction:column;width:100%;max-width:1040px;margin:0 auto;padding:var(--space-4) var(--space-5);box-sizing:border-box}
+/* The copy is centred in the hero height left under the nav, level with the fire. */
+.ck-landing .copy{max-width:500px;margin:auto 0;padding:var(--space-6) 0}
 .ck-landing h1{font-family:var(--font-display);font-weight:400;font-size:36px;line-height:1.3;margin:0 0 var(--space-4);text-transform:uppercase}
 .ck-landing .sub{font-size:18px;line-height:28px;margin:0 0 var(--space-5);max-width:26em}
 .ck-landing .cmd{border:var(--border-pixel) solid var(--ink);background:var(--ground);max-width:560px;margin:0}
@@ -42,10 +43,10 @@ body{margin:0}
 
 /* Below 700px: rows stack and the copy sits above the fire. */
 @media (max-width:700px){
-  .ck-landing .hero{min-height:0;display:flex;flex-direction:column}
-  .ck-landing .hero .scene{position:static;order:2;height:auto;aspect-ratio:320/200}
+  /* Stacked: the fire sits at the foot of the screen (its sky trimmed a little); the copy is centred in the space above it. */
   .ck-landing .in{padding:var(--space-3)}
-  .ck-landing .copy{padding-top:var(--space-6);padding-bottom:var(--space-4)}
+  .ck-landing .copy{padding:var(--space-5) 0}
+  .ck-landing .hero .scene{position:static;order:2;flex:0 0 auto;width:100%;height:max(56vw,38vh);height:max(56vw,38svh);max-height:50vh;max-height:50svh}
   .ck-landing h1{font-size:24px}
   .ck-landing .sub{font-size:15px;line-height:24px}
   .ck-landing .steps{grid-template-columns:1fr;padding:var(--space-5) var(--space-3);gap:var(--space-4)}
