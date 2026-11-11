@@ -1,4 +1,4 @@
-export const ONBOARD_PROMPT = `Connect to Click at https://clickmcp.com/mcp (remote MCP, Streamable HTTP).
+export const ONBOARD_PROMPT = `Connect to Click at https://clickmcp.com/mcp.
 
 When the sign-in page opens, either join a click or create one:
 - Join (the usual case): ask the click's admin for an invite. It starts with clk_inv_, works once, and expires (7 days by default). Paste it on the sign-in page.
