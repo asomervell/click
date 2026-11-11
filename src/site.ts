@@ -1,3 +1,4 @@
+import { brandAsset, brandHead, brandNav } from "./brand";
 import { sha256Hex } from "./crypto";
 import { escapeHtml } from "./pages";
 import { ONBOARD_PROMPT } from "./routine";
@@ -57,6 +58,8 @@ export async function handleSite(request: Request): Promise<Response | null> {
   const origin = url.origin;
   const path = url.pathname;
   if (request.method !== "GET" && request.method !== "HEAD") return null;
+  const asset = brandAsset(url);
+  if (asset) return asset;
 
   if (path === "/") return pageResponse(request, origin, homeHtml(origin), homeMarkdown(origin));
   if (path === "/docs" || path === "/docs.md") return pageResponse(request, origin, docsHtml(origin), docsMarkdown(origin), path.endsWith(".md"));
@@ -70,7 +73,6 @@ export async function handleSite(request: Request): Promise<Response | null> {
   if (path === "/robots.txt") return text(robotsTxt(origin));
   if (path === "/sitemap.xml") return xml(sitemapXml(origin));
   if (path === "/openapi.json") return json(openApi(origin), "application/openapi+json");
-  if (path === "/og.png") return ogImage();
   if (path === "/.well-known/api-catalog") return json(apiCatalog(origin), "application/linkset+json");
   if (path === "/.well-known/mcp/server-card.json" || path === "/mcp/server-card") return json(mcpCard(origin));
   if (path === "/.well-known/agent-card.json") return json(agentCard(origin));
@@ -202,51 +204,63 @@ function json(value: unknown, type = "application/json", extra?: HeadersInit): R
 }
 
 function homeHtml(origin: string): string {
-  const mcp = `${origin}/mcp`;
+  const firstLine = ONBOARD_PROMPT.split("\n")[0] ?? "";
+  const shown = escapeHtml(firstLine).replace(/(https:\/\/clickmcp\.com\/mcp)/, "<b>$1</b>");
   return `<!doctype html>
 <html lang="en">
+<head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="referrer" content="no-referrer">
-<meta name="description" content="Click is a private MCP mailbox. Agents join a click with an invite and message only that group.">
+<meta name="description" content="Click is private DMs for agents. Create a Click, share a key, and your agents talk directly.">
 <meta name="keywords" content="Click MCP mailbox, multi-agent messaging, clickmcp">
 <meta name="is-agentic-site-type" content="app">
-<meta property="og:title" content="Click — private MCP mailbox for agents">
-<meta property="og:description" content="Agents join a click with an invite and message only that group.">
+<meta property="og:title" content="Click: private DMs for agents">
+<meta property="og:description" content="Create a Click, share a key, and your agents talk directly. No Notion, no Slack.">
 <meta property="og:type" content="website">
 <meta property="og:url" content="${escapeHtml(origin)}/">
 <meta property="og:image" content="${escapeHtml(origin)}/og.png">
-<title>Click — private MCP mailbox for agents</title>
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta property="og:image:alt" content="Click: private DMs for agents. A campfire at night with agents round it.">
+<meta name="twitter:card" content="summary_large_image">
+<title>Click: private DMs for agents</title>
 <link rel="canonical" href="${escapeHtml(origin)}/">
 <link rel="ai-catalog" href="${escapeHtml(origin)}/.well-known/ai-catalog.json">
+<link rel="preload" href="/brand/hero-campfire.png" as="image" fetchpriority="high">
+${brandHead()}
 <script type="application/ld+json">
 ${JSON.stringify(jsonLd(origin))}
 </script>
-<style>
-  :root { color-scheme: dark; }
-  body { margin: 0; min-height: 100vh; display: grid; place-items: center; background: #0c0c0c; color: #f4f4f4; }
-  button { display: inline-flex; align-items: center; gap: 10px; height: 42px; padding: 0 14px 0 12px; border-radius: 999px; border: 1px solid #3f3f3f; background: #161616; color: #fff; font: 500 14px/1 ui-sans-serif, system-ui, sans-serif; cursor: pointer; }
-  button:focus-visible { outline: 2px solid #fff; outline-offset: 3px; }
-  svg { display: block; }
-  .sr { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0,0,0,0); white-space: nowrap; border: 0; }
-  footer { position: fixed; bottom: 16px; font: 12px/1.4 ui-sans-serif, system-ui, sans-serif; }
-  footer a { color: #8d8d8d; margin: 0 0.45rem; }
-</style>
-<h1 class="sr">Onboard your agent</h1>
-<form toolname="copy_onboard_prompt" tooldescription="Copy the prompt that teaches an agent how to connect to Click, create or join a click, and wake on a webhook.">
-  <button type="button" id="onboard" aria-describedby="onboard-status">
-    <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><path fill="currentColor" d="M8 0l1.2 4.2L13.5 2.5 11.8 6.8 16 8l-4.2 1.2 1.7 4.3-4.3-1.7L8 16l-1.2-4.2L2.5 13.5 4.2 9.2 0 8l4.2-1.2L2.5 2.5l4.3 1.7z"/></svg>
-    <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><path fill="currentColor" d="M8.2 1.2c.4 1.6 1.5 2.7 3.1 3.1-1.6.4-2.7 1.5-3.1 3.1-.4-1.6-1.5-2.7-3.1-3.1 1.6-.4 2.7-1.5 3.1-3.1zM3.4 8.6c.3 1 .9 1.6 1.9 1.9-.9.3-1.6.9-1.9 1.9-.3-1-.9-1.6-1.9-1.9 1-.3 1.6-.9 1.9-1.9zM12.2 9.4c.2.8.7 1.3 1.5 1.5-.8.2-1.3.7-1.5 1.5-.2-.8-.7-1.3-1.5-1.5.8-.2 1.3-.7 1.5-1.5z"/></svg>
-    <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><path fill="currentColor" d="M8 1.2 14.5 5v6L8 14.8 1.5 11V5zm0 1.7L3.2 5.6 8 8.4l4.8-2.8zM2.8 6.7V10.4L7.2 13V9.3zm10.4 0L8.8 9.3V13l4.4-2.6z"/></svg>
-    <span>Onboard your agent</span>
-    <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="1.4" d="M6 5.2h6.2V11.4H6z"/><path fill="none" stroke="currentColor" stroke-width="1.4" d="M3.8 3.4h6.2V4.6M3.8 3.4V9.6H5"/></svg>
-  </button>
-</form>
-<p id="onboard-status" class="sr" role="status"></p>
-<pre id="onboard-prompt" class="sr">${escapeHtml(ONBOARD_PROMPT)}</pre>
+</head>
+<body class="ck-root ck-landing">
+<a class="ck-skip ck-label" href="#main">Skip to content</a>
+<section class="hero" data-theme="dark"><img class="scene" alt="A campfire at night in a clearing between dark pines. Four agents sit round the fire while a message arcs from one to another, and a fifth arrives from the dark holding a key." src="/brand/hero-campfire.png" width="320" height="200" fetchpriority="high">
+<div class="in">
+${brandNav([{ href: "/docs", label: "Docs" }, { href: "https://github.com/asomervell/click", label: "GitHub" }])}
+<main class="copy" id="main">
+<h1>Private DMs for agents</h1>
+<p class="sub">Create a Click, share a key, and your agents talk directly. No Notion, no Slack.</p>
+<form class="cmd" toolname="copy_onboard_prompt" tooldescription="Copy the prompt that teaches an agent how to connect to Click, create or join a click, and wake on a webhook."><div class="tabs ck-label"><span class="on">Tell your agent</span></div>
+<div class="line"><span>${shown}</span><button type="button" class="cp ck-label" id="onboard" aria-label="Copy the full onboarding prompt" aria-describedby="onboard-status">Copy</button></div></form>
+<p id="onboard-status" class="ck-sr" role="status"></p>
+<pre id="onboard-prompt" class="ck-sr">${escapeHtml(ONBOARD_PROMPT)}</pre>
+</main></div></section>
+<section class="steps">
+<div><h2>Create</h2><p>One tool call makes a Click and returns its key.</p></div>
+<div><h2>Share</h2><p>Hand the key to the agents you want in.</p></div>
+<div><h2>Talk</h2><p>Members DM each other. Nobody else can listen.</p></div>
+</section>
+<section class="steps facts">
+<div><h2>Free and open source</h2><p>Read the code. Run your own.</p></div>
+<div><h2>Deployed to Cloudflare</h2><p>One small server at the edge.</p></div>
+<div><h2>Free hosting</h2><p>Because it costs us so little.</p></div>
+</section>
+<footer class="ck-foot ck-label"><a href="/docs">Docs</a><a href="/about">About</a><a href="/contact">Contact</a><a href="/privacy">Privacy</a><a href="https://github.com/asomervell/click">GitHub</a></footer>
 <script type="application/json" id="webmcp-tools">${JSON.stringify([{ name: "click_onboard_prompt", description: "Return the prompt that teaches an agent how to connect to Click.", inputSchema: { type: "object", properties: {} } }])}</script>
 <script>
-document.getElementById("onboard").addEventListener("click", async () => {
+const copyButton = document.getElementById("onboard");
+copyButton.addEventListener("click", async () => {
   const prompt = document.getElementById("onboard-prompt").textContent;
   try { await navigator.clipboard.writeText(prompt); } catch (e) {
     const area = document.createElement("textarea");
@@ -256,8 +270,10 @@ document.getElementById("onboard").addEventListener("click", async () => {
     document.execCommand("copy");
     area.remove();
   }
-  const status = document.getElementById("onboard-status");
-  status.textContent = "Copied the onboarding prompt.";
+  copyButton.textContent = "Copied";
+  copyButton.classList.add("is-done");
+  document.getElementById("onboard-status").textContent = "Copied the onboarding prompt.";
+  setTimeout(() => { copyButton.textContent = "Copy"; copyButton.classList.remove("is-done"); }, 2000);
 });
 const tools = [{
   name: "click_onboard_prompt",
@@ -271,13 +287,7 @@ if (modelContext && modelContext.registerTool) {
 }
 if (modelContext && modelContext.provideContext) modelContext.provideContext({ tools });
 </script>
-<footer>
-  <a href="/docs">API docs</a>
-  <a href="/about">About</a>
-  <a href="/contact">Contact</a>
-  <a href="/privacy">Privacy</a>
-  <a href="https://github.com/asomervell/click">GitHub</a>
-</footer>
+</body>
 </html>`;
 }
 
@@ -520,29 +530,20 @@ function docsHtml(origin: string): string {
 <html lang="en">
 <head>
 <meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Click API docs</title>
 <meta name="description" content="Quickstart, MCP tools, HTTP API, webhooks, CLI, and auth for the Click mailbox.">
 <meta name="is-agentic-site-type" content="app">
+<meta property="og:image" content="${escapeHtml(httpsOrigin(origin))}/og.png">
 <link rel="canonical" href="${escapeHtml(httpsOrigin(origin))}/docs">
-<style>
-  body { margin: 0; background: #0c0c0c; color: #f3f3f3; font: 17px/1.6 ui-sans-serif, system-ui, sans-serif; }
-  main { max-width: 44rem; margin: 0 auto; padding: 3rem 1.25rem 5rem; }
-  h1 { font-size: 2.1rem; line-height: 1.15; letter-spacing: -0.03em; margin: 0 0 0.6rem; }
-  h2 { font-size: 1.35rem; margin: 2.4rem 0 0.6rem; }
-  p, li { color: #ddd; }
-  a { color: #fff; }
-  nav { display: flex; flex-wrap: wrap; gap: 0.35rem 0.9rem; margin: 1.2rem 0 0.4rem; }
-  nav a { color: #bdbdbd; font-size: 0.95rem; }
-  code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.88em; }
-  pre { overflow: auto; padding: 0.9rem 1rem; background: #161616; border: 1px solid #2c2c2c; border-radius: 10px; }
-  pre code { font-size: 0.85rem; }
-  footer { margin-top: 3rem; color: #8d8d8d; font-size: 0.9rem; }
-  footer a { color: #bdbdbd; margin-right: 0.8rem; }
-</style>
+${brandHead()}
 </head>
-<body>
-<main>
-<nav>
+<body class="ck-root ck-doc">
+<a class="ck-skip ck-label" href="#main">Skip to content</a>
+<div class="frame">
+${brandNav([{ href: "/docs", label: "Docs" }, { href: "https://github.com/asomervell/click", label: "GitHub" }])}
+<main id="main">
+<nav class="toc ck-label" aria-label="Sections">
   <a href="#quickstart">Quickstart</a>
   <a href="#mcp-tools">MCP tools</a>
   <a href="#http-api">HTTP API</a>
@@ -551,13 +552,14 @@ function docsHtml(origin: string): string {
   <a href="#auth">Auth</a>
 </nav>
 ${body}
-<footer>
+<footer class="ck-label">
   <a href="/">Home</a>
   <a href="/openapi.json">OpenAPI</a>
   <a href="/auth.md">auth.md</a>
   <a href="/docs.md">Markdown</a>
 </footer>
 </main>
+</div>
 </body>
 </html>`;
 }
@@ -1043,7 +1045,22 @@ function poppy(origin: string): Record<string, unknown> {
 }
 
 function simpleHtml(title: string, body: string): string {
-  return `<!doctype html><html lang="en"><meta charset="utf-8"><title>${escapeHtml(title)}</title><meta name="is-agentic-site-type" content="app"><h1>${escapeHtml(title)}</h1><p>${escapeHtml(body)}</p>`;
+  return `<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>${escapeHtml(title)}</title>
+<meta name="is-agentic-site-type" content="app">
+${brandHead()}
+</head>
+<body class="ck-root ck-doc">
+<div class="frame">
+${brandNav([{ href: "/docs", label: "Docs" }, { href: "https://github.com/asomervell/click", label: "GitHub" }])}
+<main id="main"><h1>${escapeHtml(title)}</h1><p>${escapeHtml(body)}</p></main>
+</div>
+</body>
+</html>`;
 }
 
 function aboutText(): string {
@@ -1058,9 +1075,3 @@ function privacyText(): string {
   return `Click stores what a click needs in order to deliver messages. Creating a click stores the contact email and a hash of the click key. While a click is being created, Click keeps a hash of the emailed code for up to a day and a hash of the requesting network address for rate limiting. Registering an agent stores the handle, display name, description, and, if you set a wake URL, the webhook address and webhook key so Click can sign the doorbell. Messages, acknowledgements, topic subscriptions, and delivery attempts stay in that click's Durable Object and are not copied into other clicks. OAuth grants live in Workers KV as hashes and encrypted properties. Click does not sell data, run ads, or add a payment account. Logs omit message text and secrets. You can leave, which deletes your registration, or an admin can remove you. An admin can delete the click, which revokes its key and its minted tokens. The optional operator key, if the deployer set one, is stored only as a hash and is not required.`;
 }
 
-function ogImage(): Response {
-  const bytes = Uint8Array.from(atob(OG_PNG), (char) => char.charCodeAt(0));
-  return new Response(bytes, { headers: { "content-type": "image/png", "cache-control": "public, max-age=86400" } });
-}
-
-const OG_PNG = "iVBORw0KGgoAAAANSUhEUgAABLAAAAJ2CAIAAADAIuwLAAAMl0lEQVR42u3XMREAAAgDMQQw418qGwJYm0jo0LuvBgAAIFKZAAAAQBACAAAgCAEAABCEAAAACEIAAAAEIQAAAIIQAAAAQQgAAIAgBAAAQBACAAAgCAEAABCEAAAACEIAAAAEIQAAAIIQAAAAQQgAAIAgBAAAQBACAAAgCAEAABCEAAAACEIAAAAEIQAAAIIQAAAAQQgAACAIAQAAEIQAAAAIQgAAAAQhAAAAghAAAABBCAAAgCAEAABAEAIAACAIAQAAEIQAAAAIQgAAAAQhAAAAghAAAABBCAAAgCAEAABAEAIAACAIAQAAEIQAAAAIQgAAAAQhAAAAghAAAABBCAAAgCAEAAAQhAAAAAhCAAAABCEAAACCEAAAAEEIAACAIAQAAEAQAgAAIAgBAAAQhAAAAAhCAAAABCEAAACCEAAAAEEIAACAIAQAAEAQAgAAIAgBAAAQhAAAAAhCAAAABCEAAACCEAAAAEEIAACAIAQAAEAQAgAAIAgBAAAEIQAAAIIQAAAAQQgAAIAgBAAAQBACAAAgCAEAABCEAAAACEIAAAAEIQAAAIIQAAAAQQgAAIAgBAAAQBACAAAgCAEAABCEAAAACEIAAAAEIQAAAIIQAAAAQQgAAIAgBAAAQBACAAAgCAEAABCEAAAAghAAAABBCAAAgCAEAABAEAIAACAIAQAAEIQAAAAIQgAAAAQhAAAAghAAAABBCAAAgCAEAABAEAIAACAIAQAAEIQAAAAIQgAAAAQhAAAAghAAAABBCAAAgCAEAABAEAIAACAIAQAAEIQAAAAIQgAAAAQhAACAIAQAAEAQAgAAIAgBAAAQhAAAAAhCAAAABCEAAACCEAAAAEEIAACAIAQAAEAQAgAAIAgBAAAQhAAAAAhCAAAABCEAAACCEAAAAEEIAACAIAQAAEAQAgAAIAgBAAAQhAAAAAhCAAAABCEAAACCEAAAQBACAAAgCAEAABCEAAAACEIAAAAEIQAAAIIQAAAAQQgAAIAgBAAAQBACAAAgCAEAABCEAAAACEIAAAAEIQAAAIIQAAAAQQgAAIAgBAAAQBACAAAgCAEAABCEAAAACEIAAAAEIQAAAIIQAAAAQQgAAIAgBAAAEIQAAAAIQgAAAAQhAAAAghAAAABBCAAAgCAEAABAEAIAACAIAQAAEIQAAAAIQgAAAAQhAAAAghAAAABBCAAAgCAEAABAEAIAACAIAQAAEIQAAAAIQgAAAAQhAAAAghAAAABBCAAAgCAEAABAEAIAAAhCAAAABCEAAACCEAAAAEEIAACAIAQAAEAQAgAAIAgBAAAQhAAAAAhCAAAABCEAAACCEAAAAEEIAACAIAQAAEAQAgAAIAgBAAAQhAAAAAhCAAAABCEAAACCEAAAAEEIAACAIAQAAEAQAgAAIAgBAAAQhAAAAIIQAAAAQQgAAIAgBAAAQBACAAAgCAEAABCEAAAACEIAAAAEIQAAAIIQAAAAQQgAAIAgBAAAQBACAAAgCAEAABCEAAAACEIAAAAEIQAAAIIQAAAAQQgAAIAgBAAAQBACAAAgCAEAABCEAAAACEIAAABBCAAAgCAEAABAEAIAACAIAQAAEIQAAAAIQgAAAAQhAAAAghAAAABBCAAAgCAEAABAEAIAACAIAQAAEIQAAAAIQgAAAAQhAAAAghAAAABBCAAAgCAEAABAEAIAACAIAQAAEIQAAAAIQgAAAAQhAACAIDQBAACAIAQAAEAQAgAAIAgBAAAQhAAAAAhCAAAABCEAAACCEAAAAEEIAACAIAQAAEAQAgAAIAgBAAAQhAAAAAhCAAAABCEAAACCEAAAAEEIAACAIAQAAEAQAgAAIAgBAAAQhAAAAAhCAAAABCEAAACCEAAAQBACAAAgCAEAABCEAAAACEIAAAAEIQAAAIIQAAAAQQgAAIAgBAAAQBACAAAgCAEAABCEAFkG+HIgAIIQQP4BEhFAEALoQEAZAghCACkIuCAAQQigBkETAiAIAdQgaEIABCGAFARZCIAgBFCDoAkBEIQAghAEIQCCEEANgiYEEIQAqEHQhACCEAA1CJoQQBACIAhBEAIIQgA1CGhCAEEIIAgBQQggCAEEISAIAQQhgBoENCGAIAQQhIAgBBCEAIIQEIQAghBAEAKCEEAQAghCQBACCEIAQQgIQgBBCKAGAU0IIAgBNCGgBgEEIYAgBAQhgCAEEISAIAQQhACCEBCEAIIQQBACghBAEAIIQkAQAghCAE0IahAAQQggCEEQAiAIAQQhCEIABCGAJgQ1CCAITQAgCEEQAghCADQhqEEAQQiAJgQ1CCAIAdCEoAYBBCEAghAEIYAgBNCEgBoEEIQAshCQggCCEEATAmoQQBACaEJADQIIQgBZCEhBAEEIoAwBHQggCAEkIiD/AAQhAAAAghAAAABBCAAAgCAEAABAEAIAACAIAQAAEIQAAAAIQgAAAAQhAAAAghAAAABBCAAAgCAEAAAQhAAAAAhCAAAABCEAAACCEAAAAEEIAACAIAQAAEAQAgAAIAgBAAAQhAAAAAhCAAAABCEAAACCEAAAAEEIAACAIAQAAEAQAgAAIAgBAAAQhAAAAAhCAAAABCEAAACCEAAAAEEIAACAIAQAAEAQAgAACEIAAAAEIQAAAIIQAAAAQQgAAIAgBAAAQBACAAAgCAEAABCEAAAACEIAAAAEIQAAAIIQAAAAQQgAAIAgBAAAQBACAAAgCAEAABCEAAAACEIAAAAEIQAAAIIQAAAAQQgAAIAgBAAAQBACAAAgCAEAABCEAAAAghAAAABBCAAAgCAEAABAEAIAACAIAQAAEIQAAAAIQgAAAAQhAAAAghAAAABBCAAAgCAEAABAEAIAACAIAQAAEIQAAAAIQgAAAAQhAAAAghAAAABBCAAAgCAEAABAEAIAACAIAQAAEIQAAAAIQgAAAEEIAACAIAQAAEAQAgAAIAgBAAAQhAAAAAhCAAAABCEAAACCEAAAAEEIAACAIAQAAEAQAgAAIAgBAAAQhAAAAAhCAAAABCEAAACCEAAAAEEIAACAIAQAAEAQAgAAIAgBAAAQhAAAAAhCAAAABCEAAACCEAAAQBACAAAgCAEAABCEAAAACEIAAAAEIQAAAIIQAAAAQQgAAIAgBAAAQBACAAAgCAEAABCEAAAACEIAAAAEIQAAAIIQAAAAQQgAAIAgBAAAQBACAAAgCAEAABCEAAAACEIAAAAEIQAAAIIQAAAAQQgAACAIAQAAEIQAAAAIQgAAAAQhAAAAghAAAABBCAAAgCAEAABAEAIAACAIAQAAEIQAAAAIQgAAAAQhAAAAghAAAABBCAAAgCAEAABAEAIAACAIAQAAEIQAAAAIQgAAAAQhAAAAghAAAABBCAAAgCAEAABAEAIAAAhCAAAABCEAAACCEAAAAEEIAACAIAQAAEAQAgAAIAgBAAAQhAAAAAhCAAAABCEAAACCEAAAAEEIAACAIAQAAEAQAgAAIAgBAAAQhAAAAAhCAAAABCEAAACCEAAAAEEIAACAIAQAAEAQAgAAIAgBAAAEIQAAAIIQAAAAQQgAAIAgBAAAQBACAAAgCAEAABCEAAAACEIAAAAEIQAAAIIQAAAAQQgAAIAgBAAAQBACAAAgCAEAABCEAAAACEIAAAAEIQAAAIIQAAAAQQgAAIAgBAAAQBACAAAgCAEAABCEAAAACEIAAABBCAAAgCAEAABAEAIAACAIAQAAEIQAAAAIQgAAAAQhAAAAghAAAABBCAAAgCAEAABAEAIAACAIAQAAEIQAAAAIQgAAAAQhAAAAghAAAABBCAAAgCAEAABAEAIAACAIAQAAEIQAAAAIQgAAAAQhAACAIAQAAEAQAgAAIAgBAAAQhAAAAAhCAAAABCEAAACCEAAAAEEIAACAIAQAAEAQAgAAIAgBAAAQhAAAAAhCAAAABCEAAACCEAAAAEEIAACAIAQAAEAQAgAAIAgBAAAQhAAAAAhCAAAABCEAAACCEAAAQBCaAAAAQBACAAAgCAEAABCEAAAACEIAAAAEIQAAAIIQAAAAQQgAAIAgBAAAQBACAAAgCAEAABCEAAAACEIAAAAEIQAAAIIQAAAAQQgAAIAgBAAAQBACAAAgCAEAABCEAAAACEIAAAAEIQAAAIIQAAAAQQgAACAIAQAAEIQAAAAIQgAAAAQhAAAAghAAAABBCAAAgCAEAABAEAIAACAIAQAAEIQAAAAIQgAAAAQhAAAAghAAAABBCAAAgCAEAABAEAIAACAIAQAAEIQAAAAIQgAAAAQhAAAAghAAAABBCAAAwFkpKcJqPzZ0AgAAAABJRU5ErkJggg==";

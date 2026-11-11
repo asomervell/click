@@ -1,0 +1,70 @@
+/* Click design tokens. CRT (dark) is the default; add data-theme="light" for Paper. */
+@import url("https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=Press+Start+2P&display=swap");
+:root, [data-theme="dark"] {
+  --ground: #000000;
+  --surface: #151515;
+  --ink: #ffffff;
+  --muted: #aaaaaa;
+  --line: #555555;
+  --cyan: #55ffff;
+  --magenta: #ff55ff;
+  --magenta-deep: #200020;
+  --magenta-dim: #550055;
+  --magenta-mid: #aa00aa;
+  --magenta-pale: #ffaaff;
+  --cyan-text: #55ffff;
+  --magenta-text: #ff55ff;
+  --on-cyan: #000000;
+  --on-magenta: #000000;
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 16px;
+  --space-4: 24px;
+  --space-5: 32px;
+  --space-6: 48px;
+  --space-7: 64px;
+  --radius-0: 0px;
+  --shadow-ink: 4px 4px 0 0 #ffffff;
+  --shadow-magenta: 4px 4px 0 0 #ff55ff;
+  --shadow-cyan: 4px 4px 0 0 #55ffff;
+  --border-pixel: 2px;
+  --font-display: "Press Start 2P", ui-monospace, monospace;
+  --font-mono: "IBM Plex Mono", ui-monospace, Menlo, monospace;
+}
+[data-theme="light"] {
+  --ground: #ffffff;
+  --surface: #f0f0f0;
+  --ink: #000000;
+  --muted: #555555;
+  --line: #aaaaaa;
+  --cyan: #00aaaa;
+  --magenta: #aa00aa;
+  --magenta-deep: #200020;
+  --magenta-dim: #550055;
+  --magenta-mid: #aa00aa;
+  --magenta-pale: #ffaaff;
+  --cyan-text: #006b6b;
+  --magenta-text: #aa00aa;
+  --on-cyan: #000000;
+  --on-magenta: #ffffff;
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 16px;
+  --space-4: 24px;
+  --space-5: 32px;
+  --space-6: 48px;
+  --space-7: 64px;
+  --radius-0: 0px;
+  --shadow-ink: 4px 4px 0 0 #000000;
+  --shadow-magenta: 4px 4px 0 0 #aa00aa;
+  --shadow-cyan: 4px 4px 0 0 #00aaaa;
+  --border-pixel: 2px;
+}
+.ck-type-display-xl { font-family: var(--font-display); font-size: 48px; line-height: 1.15; font-weight: 400; text-transform: uppercase; }
+.ck-type-display { font-family: var(--font-display); font-size: 32px; line-height: 1.2; font-weight: 400; text-transform: uppercase; }
+.ck-type-heading { font-family: var(--font-display); font-size: 16px; line-height: 1.5; font-weight: 400; text-transform: uppercase; }
+.ck-type-label { font-family: var(--font-display); font-size: 10px; line-height: 1.6; font-weight: 400; letter-spacing: 0.5px; text-transform: uppercase; }
+.ck-type-body-lg { font-family: var(--font-mono); font-size: 18px; line-height: 28px; font-weight: 400; }
+.ck-type-body { font-family: var(--font-mono); font-size: 15px; line-height: 24px; font-weight: 400; }
+.ck-type-body-sm { font-family: var(--font-mono); font-size: 13px; line-height: 20px; font-weight: 400; }
+.ck-type-code { font-family: var(--font-mono); font-size: 13px; line-height: 22px; font-weight: 500; }

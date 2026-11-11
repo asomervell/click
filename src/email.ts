@@ -1,4 +1,4 @@
-import { ClickError } from "./types";
+import { ClickError, PRODUCTION_ORIGIN } from "./types";
 
 /** One verification message. The code is only ever held in memory and in the mail itself. */
 export type VerificationMail = {
@@ -51,8 +51,25 @@ export function verificationEmail(mail: Pick<VerificationMail, "code" | "clickNa
   return {
     subject: `Click code ${mail.code}`,
     text: [`The verification code for ${name} is`, "", mail.code, "", outro].join("\n"),
-    html: `<p>The verification code for ${escape(name)} is</p><p style="font-size:28px;font-weight:600;letter-spacing:4px">${escape(mail.code)}</p><p>${outro}</p>`,
+    html: verificationHtml(escape(name), escape(mail.code), outro),
   };
+}
+
+// Email clients ignore stylesheets and web fonts, so the brand is inlined: black ground, white
+// IBM Plex Mono text with a monospace fallback, the code in magenta, and the magenta lockup as a PNG.
+const MAIL_FONT = "'IBM Plex Mono',Menlo,Consolas,'Courier New',monospace";
+const MAIL_DISPLAY = "'Press Start 2P','IBM Plex Mono',Menlo,Consolas,monospace";
+
+function verificationHtml(name: string, code: string, outro: string): string {
+  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="color-scheme" content="dark"><meta name="supported-color-schemes" content="dark"><title>Click code ${code}</title></head>`
+    + `<body style="margin:0;padding:0;background:#000000;color:#ffffff">`
+    + `<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="background:#000000"><tr><td align="left" style="padding:32px 24px">`
+    + `<table role="presentation" cellpadding="0" cellspacing="0" border="0" style="max-width:560px;width:100%;border:2px solid #ffffff;background:#000000"><tr><td style="padding:24px">`
+    + `<img src="${PRODUCTION_ORIGIN}/brand/lockup-magenta.png" width="104" height="32" alt="Click" style="display:block;border:0;image-rendering:pixelated;margin:0 0 24px">`
+    + `<p style="margin:0 0 16px;font:400 15px/24px ${MAIL_FONT};color:#ffffff">The verification code for ${name} is</p>`
+    + `<p style="margin:0 0 24px;font:400 28px/40px ${MAIL_DISPLAY};letter-spacing:4px;color:#ff55ff">${code}</p>`
+    + `<p style="margin:0;font:400 13px/20px ${MAIL_FONT};color:#aaaaaa">${outro}</p>`
+    + `</td></tr></table></td></tr></table></body></html>`;
 }
 
 function escape(value: string): string {
