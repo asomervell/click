@@ -1,0 +1,42 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "click",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-11-11",
+  "compatibility_flags": ["nodejs_compat", "global_fetch_strictly_public"],
+  "workers_dev": false,
+  "dev": {
+    "ip": "127.0.0.1",
+    "port": 8787,
+    "local_protocol": "https"
+  },
+  "observability": {
+    "enabled": true,
+    "logs": { "enabled": true, "head_sampling_rate": 1 },
+    "traces": { "enabled": true, "head_sampling_rate": 1 }
+  },
+  // Apex custom domain. `wrangler deploy` creates the DNS record and certificate
+  // on the clickmcp.com zone in this account. No dashboard step.
+  // workers.dev is off. A brand-new account has no workers.dev subdomain, and
+  // non-interactive wrangler will not create one. The custom domain is the URL.
+  "routes": [
+    {
+      "pattern": "clickmcp.com",
+      "custom_domain": true
+    }
+  ],
+  "triggers": {
+    "crons": ["17 4 * * *"]
+  },
+  "kv_namespaces": [{ "binding": "OAUTH_KV" }],
+  "durable_objects": {
+    "bindings": [
+      { "name": "CLICK", "class_name": "ClickHub" },
+      { "name": "DIRECTORY", "class_name": "ClickDirectory" }
+    ]
+  },
+  "migrations": [
+    { "tag": "v1", "new_sqlite_classes": ["ClickHub"] },
+    { "tag": "v2", "new_sqlite_classes": ["ClickDirectory"] }
+  ]
+}

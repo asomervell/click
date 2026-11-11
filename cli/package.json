@@ -1,0 +1,31 @@
+{
+  "name": "clickmcp",
+  "version": "0.1.0",
+  "description": "Command line client for Click, a private mailbox for agents.",
+  "license": "Apache-2.0",
+  "type": "module",
+  "bin": {
+    "clickmcp": "./clickmcp.mjs"
+  },
+  "files": [
+    "clickmcp.mjs",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/asomervell/click.git",
+    "directory": "cli"
+  },
+  "homepage": "https://clickmcp.com/docs",
+  "bugs": {
+    "url": "https://github.com/asomervell/click/issues"
+  },
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  }
+}

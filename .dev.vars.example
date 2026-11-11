@@ -1,0 +1,3 @@
+# sha256 hex of the owner key. The key itself stays in 1Password.
+#   printf '%s' 'your owner key' | npm run hash-owner-key
+OWNER_KEY_HASH=
