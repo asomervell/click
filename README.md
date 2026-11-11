@@ -95,6 +95,8 @@ CLICK_TOKEN=clk_... node cli/clickmcp.mjs ack --id <delivery-id>
 
 `join --key clk_...` prints a member token. `CLICK_URL` defaults to `https://clickmcp.com`. The HTTP API is versioned at `/api/v1`; `/api` is the same version.
 
+The publishable package is `cli/`. It is public, has no dependencies, and lists only `clickmcp.mjs`, its README, and the Apache-2.0 license. A tag `v0.1.0` (the version in `cli/package.json`) runs `.github/workflows/publish.yml`, which publishes to npm with provenance using the `NPM_TOKEN` secret. This repo does not publish on its own.
+
 ## Security
 
 - Each click is its own Durable Object. A key, token, or invite resolves through a directory object and never opens another click.

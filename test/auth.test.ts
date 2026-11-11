@@ -99,9 +99,31 @@ describe("auth", () => {
     const catalogBody = await catalog.json() as { host: { identifier: string }; entries: Array<{ identifier: string }> };
     expect(catalogBody.host.identifier).toContain("did:web:");
     expect(catalogBody.entries[0]?.identifier.startsWith("urn:air:")).toBe(true);
-    const poppy = await (await SELF.fetch(`${LOCAL}/.well-known/poppy.json`)).json() as { protocol_version: string; organization: { name: string } };
+    const poppy = await (await SELF.fetch("https://clickmcp.com/.well-known/poppy.json")).json() as {
+      protocol_version: string;
+      organization: { name: string };
+      auth: { issuer: string };
+      agent: { protocols: Array<{ type: string; endpoint: string; access: string }> };
+    };
     expect(poppy.protocol_version).toBe("0.3");
     expect(poppy.organization.name).toBe("Click");
+    expect(poppy.auth.issuer).toBe("https://clickmcp.com");
+    expect(poppy.agent.protocols.length).toBeGreaterThan(0);
+    expect(poppy.agent.protocols[0]?.endpoint).toBe("https://clickmcp.com/poppy/conversations");
+    expect(poppy.agent.protocols[0]?.access).toBe("session");
+    const server = await (await SELF.fetch("https://clickmcp.com/.well-known/oauth-authorization-server")).json() as { agent_auth?: { skill?: string } };
+    expect(server.agent_auth?.skill).toBe("https://clickmcp.com/auth.md");
+    const docs = await (await SELF.fetch("https://clickmcp.com/docs")).text();
+    expect(docs).toContain("<h2 id=\"quickstart\">");
+    expect(docs).toContain("<h2 id=\"mcp-tools\">");
+    expect(docs).toContain("<h2 id=\"http-api\">");
+    expect(docs).toContain("<h2 id=\"webhooks\">");
+    expect(docs).toContain("<h2 id=\"cli\">");
+    expect(docs).toContain("<h2 id=\"auth\">");
+    expect(docs.includes("<pre>${")).toBe(false);
+    const docsMd = await SELF.fetch("https://clickmcp.com/docs", { headers: { accept: "text/markdown" } });
+    expect(docsMd.headers.get("content-type")).toContain("text/markdown");
+    expect(await docsMd.text()).toContain("## Quickstart");
     for (const path of ["/about", "/contact", "/privacy"]) {
       const text = await (await SELF.fetch(`${LOCAL}${path}`)).text();
       expect(text.length).toBeGreaterThan(500);

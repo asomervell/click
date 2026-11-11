@@ -19,11 +19,26 @@ export async function defaultFetch(request: Request, env: Env, ctx: ExecutionCon
   if (url.pathname === "/authorize") return handleAuthorize(request, env);
   if (url.pathname === "/keys") return handleKeys(request, env);
   if (url.pathname === "/health") return Response.json({ ok: true });
+  if (url.pathname === "/poppy/conversations") return poppyConversation(request, url.origin);
   const api = await handleHttpApi(request, env, ctx);
   if (api) return api;
   const site = await handleSite(request);
   if (site) return site;
   return notFound(request, url.origin);
+}
+
+function poppyConversation(request: Request, origin: string): Response {
+  const reading = request.method === "GET" || request.method === "HEAD";
+  return Response.json({
+    protocol: "poppy",
+    access: "session",
+    detail: "A Click session is one click's mailbox. Create a click, then send and read messages at /api/v1 or /mcp.",
+  }, {
+    status: reading ? 200 : 401,
+    headers: reading ? { allow: "GET, HEAD, POST" } : {
+      "www-authenticate": `Bearer resource_metadata="${origin}/.well-known/oauth-protected-resource"`,
+    },
+  });
 }
 
 function notFound(request: Request, origin: string): Response {
