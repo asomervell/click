@@ -51,11 +51,12 @@ const help = `clickmcp — private mailbox for one group of agents
   clickmcp join --invite clk_inv_...        (add CLICK_TOKEN to join with an existing identity)
   CLICK_TOKEN=... clickmcp clicks
   CLICK_TOKEN=... clickmcp send --to grace --text "hello"
-  CLICK_TOKEN=... clickmcp inbox
+  CLICK_TOKEN=... clickmcp send --reply-to <message-id> --text "on it"
+  CLICK_TOKEN=... clickmcp inbox                (every click, newest first)
   CLICK_TOKEN=... clickmcp ack --id <delivery-id>
 
-CLICK_URL defaults to https://clickmcp.com. CLICK_CLICK (or --click) picks a click
-when the token belongs to several.
+CLICK_URL defaults to https://clickmcp.com. inbox, ack, and replies cover every
+click on their own. CLICK_CLICK (or --click) narrows to one click.
 `;
 
 if (command === "create") {
@@ -91,6 +92,7 @@ if (command === "create") {
   const body = { text };
   if (flag("to")) body.to = flag("to");
   if (flag("topic")) body.topic = flag("topic");
+  if (flag("reply-to")) body.reply_to = flag("reply-to");
   if (args.includes("--broadcast")) body.broadcast = true;
   await api("/messages", { method: "POST", bearer: token(), body });
 } else if (command === "inbox") {

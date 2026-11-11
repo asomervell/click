@@ -13,6 +13,7 @@ import {
   verifyCreateClick,
 } from "./clicks";
 import { getHub } from "./hub";
+import { ackAcross, historyAcross, inboxAcross, routeSend } from "./routing";
 import { ClickError } from "./types";
 import { cleanLabel } from "./validate";
 
@@ -63,7 +64,7 @@ export async function handleHttpApi(request: Request, env: Env, ctx: ExecutionCo
     if (status === 500) {
       console.error(JSON.stringify({ message: "api_failed", error: error instanceof Error ? error.message : "error" }));
     }
-    return problem(status, message, status === 429 ? "rate_limited" : status === 404 ? "not_found" : status === 500 ? "internal" : "invalid");
+    return problem(status, message, status === 429 ? "rate_limited" : status === 404 ? "not_found" : status === 500 ? "internal" : status === 409 ? "conflict" : /^Ambiguous:|needs click/.test(message) ? "ambiguous_click" : "invalid");
   }
 }
 
@@ -87,12 +88,18 @@ function statusFor(message: string): number {
   if (/too many|try again in a few|wait a minute|wait and try|try again in an hour|try again tomorrow|wait 15 minutes/i.test(message)) return 429;
   if (message === "Unknown API route.") return 404;
   if (message === "Click failed.") return 500;
+  if (message.startsWith("Click conflict:")) return 409;
   return 400;
 }
 
 function selector(request: Request, url: URL, body: Record<string, unknown>): string | null {
   const fromBody = typeof body.click === "string" ? body.click : null;
   return url.searchParams.get("click") ?? request.headers.get("x-click-id") ?? fromBody;
+}
+
+function numberParam(url: URL, name: string): number | undefined {
+  const raw = url.searchParams.get(name);
+  return raw == null || raw === "" ? undefined : Number(raw);
 }
 
 function optionalString(value: unknown): string | undefined {
@@ -109,7 +116,39 @@ async function dispatch(
   body: Record<string, unknown>,
 ): Promise<unknown> {
   if (request.method === "GET" && path === "/api/clicks") return listClicks(env, identity);
-  const props = selectClick(identity, selector(request, url, body));
+  const chosen = selector(request, url, body);
+  if (request.method === "POST" && path === "/api/messages") {
+    const routed = await routeSend(env, identity, {
+      text: String(body.text ?? ""),
+      to: optionalString(body.to),
+      topic: optionalString(body.topic),
+      broadcast: body.broadcast === true,
+      reply_to: optionalString(body.reply_to),
+      click: chosen,
+    });
+    const target = getHub(env, routed.props.clickId);
+    const result = await target.send(routed.props, routed.send);
+    ctx.waitUntil(target.processWakes(Date.now(), routed.props.clickId).catch(() => undefined));
+    return { ...result, click: routed.props.clickId, click_name: routed.props.clickName };
+  }
+  if (request.method === "GET" && path === "/api/inbox") {
+    return inboxAcross(env, identity, { click: chosen, limit: numberParam(url, "limit"), cursor: url.searchParams.get("cursor") });
+  }
+  if (request.method === "GET" && path === "/api/history") {
+    return historyAcross(env, identity, {
+      click: chosen,
+      topic: url.searchParams.get("topic") ?? undefined,
+      with: url.searchParams.get("with") ?? undefined,
+      before: numberParam(url, "before"),
+      limit: numberParam(url, "limit"),
+      cursor: url.searchParams.get("cursor"),
+    });
+  }
+  if (request.method === "POST" && path === "/api/ack") {
+    const ids = Array.isArray(body.ids) ? body.ids.map(String) : [];
+    return ackAcross(env, identity, { click: chosen, ids });
+  }
+  const props = selectClick(identity, chosen);
   const hub = getHub(env, props.clickId);
   if (request.method === "GET" && path === "/api/me") return hub.whoami(props);
   if (request.method === "PATCH" && path === "/api/me") {
@@ -137,24 +176,6 @@ async function dispatch(
   if (request.method === "DELETE" && path === "/api/agents/me") return hub.leave(props);
   if (request.method === "DELETE" && path.startsWith("/api/agents/")) {
     return hub.removeMember(props, decodeURIComponent(path.slice("/api/agents/".length)));
-  }
-  if (request.method === "POST" && path === "/api/messages") {
-    const result = await hub.send(props, {
-      text: String(body.text ?? ""),
-      to: optionalString(body.to),
-      topic: optionalString(body.topic),
-      broadcast: body.broadcast === true,
-    });
-    ctx.waitUntil(hub.processWakes(Date.now(), props.clickId).catch(() => undefined));
-    return { ...result, click: props.clickId };
-  }
-  if (request.method === "GET" && path === "/api/inbox") {
-    const limit = url.searchParams.get("limit");
-    return { click: props.clickId, click_name: props.clickName, ...(await hub.inbox(props, limit ? Number(limit) : undefined)) };
-  }
-  if (request.method === "POST" && path === "/api/ack") {
-    const ids = Array.isArray(body.ids) ? body.ids.map(String) : [];
-    return hub.ack(props, ids);
   }
   if (request.method === "GET" && path === "/api/key") return hub.showKey(props);
   if (request.method === "POST" && path === "/api/key/rotate") return rotateClickKey(env, props);

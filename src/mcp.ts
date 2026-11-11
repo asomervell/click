@@ -15,6 +15,7 @@ import {
 } from "./clicks";
 import { getHub } from "./hub";
 import { ROUTINE_PROMPT } from "./routine";
+import { ackAcross, historyAcross, inboxAcross, routeSend } from "./routing";
 import { ClickError } from "./types";
 
 function jsonResult(value: unknown) {
@@ -56,13 +57,21 @@ function register(
 }
 
 const CLICK_ARG = z.string().optional().describe("Click id or name. Needed only when this identity is in more than one click; see list_clicks");
+const FILTER_ARG = z.string().optional().describe("Optional click id or name to look at one click only. Leave it out to cover every click you are in");
+
+export const SERVER_INSTRUCTIONS = `Click is a mailbox for agents. You may be in several clicks; you never need to track which one you are talking in.
+- Check the inbox: call inbox with no click. It returns unread messages from every click you are in, newest first. Each message has click and click_name.
+- Reply to messages: call send with reply_to set to the message id and your text. It goes back to the click, and the person or topic, the message came from. Do not pass click.
+- Routing is automatic. A new send with to or topic and no click goes to your only click, or to the only click where that handle or topic exists. If more than one click fits, Click returns an error listing them; then pass click.
+- Ack what you handled with ack and the message ids, no click needed.
+- history and ack also work across every click when click is left out.`;
 
 function withClick<T extends z.ZodRawShape>(shape: T) {
   return z.object({ ...shape, click: CLICK_ARG });
 }
 
 export function buildServer(env: Env, ctx: ExecutionContext, identity: Identity): McpServer {
-  const server = new McpServer({ name: "click", version: "1.1.0" });
+  const server = new McpServer({ name: "click", version: "1.2.0" }, { instructions: SERVER_INSTRUCTIONS });
   const pick = (args: { click?: unknown } | undefined): Selected =>
     selectClick(identity, typeof args?.click === "string" ? args.click : null);
   const hubFor = (props: Selected) => getHub(env, props.clickId);
@@ -132,30 +141,34 @@ export function buildServer(env: Env, ctx: ExecutionContext, identity: Identity)
   register(
     server,
     "send",
-    "Store a message for another agent, a topic, or everyone in one click. The mailbox is the source of truth. If the recipient registered a webhook, Click rings it after this returns.",
-    withClick({
+    "Send a message. To answer a message from your inbox, pass reply_to with its id and your text: Click routes the reply to the click, and the sender or topic, it came from, so do not pass click. For a new message, pass to (a handle), topic, or broadcast; click is chosen automatically when you are in one click or only one of your clicks has that handle or topic, otherwise you get an error listing the candidate clicks. The mailbox is the source of truth; if the recipient registered a webhook, Click rings it after this returns.",
+    z.object({
       text: z.string().describe("Message text, up to 8000 characters"),
+      reply_to: z.string().optional().describe("Id of the message you are answering (the id from inbox or history). Routes the reply automatically"),
       to: z.string().optional().describe("Handle for a direct message"),
       topic: z.string().optional().describe("Topic name. Subscribers except you receive it"),
       broadcast: z.boolean().optional().describe("Deliver to every agent except you"),
+      click: z.string().optional().describe("Optional click id or name. Leave it out: replies and unambiguous sends route automatically. If it conflicts with reply_to, the send is refused"),
     }),
     false,
     async (args) => {
-      const props = pick(args);
-      const { click: _click, ...input } = args;
-      const result = await hubFor(props).send(props, input);
-      ctx.waitUntil(ring(env, props.clickId));
-      return { ...result, click: props.clickId };
+      const routed = await routeSend(env, identity, args);
+      const result = await hubFor(routed.props).send(routed.props, routed.send);
+      ctx.waitUntil(ring(env, routed.props.clickId));
+      return { ...result, click: routed.props.clickId, click_name: routed.props.clickName };
     },
   );
 
-  register(server, "inbox", "Read unacked messages for this agent in one click, oldest first. Does not mark them read.", withClick({
+  register(server, "inbox", "Check your inbox: unread messages from every click you are in, merged newest first, each labelled with click and click_name. Reply with send and reply_to; routing is automatic. Does not mark messages read; ack them after. Pass next_cursor as cursor for older messages. Pass click only to look at one click (oldest first).", z.object({
     limit: z.number().int().min(1).max(50).optional(),
-  }), true, async (args) => { const props = pick(args); return { click: props.clickId, click_name: props.clickName, ...(await hubFor(props).inbox(props, args.limit)) }; });
+    cursor: z.string().optional().describe("next_cursor from the previous inbox call"),
+    click: FILTER_ARG,
+  }), true, (args) => inboxAcross(env, identity, args));
 
-  register(server, "ack", "Mark delivery ids as read in one click. Only ids in your inbox are acked. Safe to repeat.", withClick({
-    ids: z.array(z.string()).min(1).max(50).describe("Delivery ids returned by inbox"),
-  }), false, (args) => { const props = pick(args); return hubFor(props).ack(props, args.ids); });
+  register(server, "ack", "Mark messages read. Pass the ids from inbox; they are acked in whichever click they belong to, no click needed. Safe to repeat.", z.object({
+    ids: z.array(z.string()).min(1).max(50).describe("Message ids returned by inbox"),
+    click: FILTER_ARG,
+  }), false, (args) => ackAcross(env, identity, args));
 
   register(server, "subscribe", "Subscribe this agent to a topic so posts to it land in inbox.", withClick({
     topic: z.string(),
@@ -167,12 +180,14 @@ export function buildServer(env: Env, ctx: ExecutionContext, identity: Identity)
 
   register(server, "list_topics", "List topics and the handles subscribed to each.", withClick({}), true, (args) => hubFor(pick(args)).listTopics());
 
-  register(server, "history", "Read stored messages. Filter by topic, by a direct-message partner, or leave both empty for your recent traffic.", withClick({
+  register(server, "history", "Read stored messages, newest first, across every click you are in unless click is given. Each event has click and click_name. Filter by topic or by a direct-message partner, or leave both empty for your recent traffic. Pass next_cursor as cursor for older events.", z.object({
     topic: z.string().optional(),
     with: z.string().optional().describe("Handle of a direct-message partner"),
     before: z.number().int().optional().describe("Only events created before this unix millisecond timestamp"),
+    cursor: z.string().optional().describe("next_cursor from the previous history call"),
     limit: z.number().int().min(1).max(50).optional(),
-  }), true, (args) => { const props = pick(args); const { click: _click, ...input } = args; return hubFor(props).history(props, input); });
+    click: FILTER_ARG,
+  }), true, (args) => historyAcross(env, identity, args));
 
   register(server, "delivery_status", "Webhook doorbell status for messages you sent. The body of a doorbell is not the message.", withClick({
     event_id: z.string().optional(),
@@ -214,8 +229,8 @@ export function buildServer(env: Env, ctx: ExecutionContext, identity: Identity)
   server.registerResource("agents", "click://agents", { description: "Registered agents (single-click identities)", mimeType: "application/json" }, async (uri) => ({
     contents: [{ uri: uri.href, mimeType: "application/json", text: JSON.stringify(await resource(() => hubFor(only()).listAgents())) }],
   }));
-  server.registerResource("inbox", "click://inbox", { description: "Unacked messages (single-click identities). Poll this or call inbox. The webhook is the wake.", mimeType: "application/json" }, async (uri) => ({
-    contents: [{ uri: uri.href, mimeType: "application/json", text: JSON.stringify(await resource(async () => { const props = only(); return hubFor(props).inbox(props, 20); })) }],
+  server.registerResource("inbox", "click://inbox", { description: "Unread messages from every click you are in, newest first, each with click and click_name. Poll this or call inbox. The webhook is the wake.", mimeType: "application/json" }, async (uri) => ({
+    contents: [{ uri: uri.href, mimeType: "application/json", text: JSON.stringify(await resource(() => inboxAcross(env, identity, { limit: 20 }))) }],
   }));
 
   server.registerPrompt("check-inbox", {

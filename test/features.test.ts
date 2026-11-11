@@ -255,7 +255,8 @@ describe("several clicks", () => {
     expect(clicks.clicks.map((row) => row.click_id).sort()).toEqual([one.click_id, two.click_id].sort());
     expect(clicks.clicks.find((row) => row.click_id === one.click_id)).toMatchObject({ handle: adaHandle, name: "Alpha Team" });
 
-    const ambiguous = await api(LOCAL, ada.token, "/api/v1/inbox");
+    expect((await api(LOCAL, ada.token, "/api/v1/inbox")).status).toBe(200);
+    const ambiguous = await api(LOCAL, ada.token, "/api/v1/me");
     expect(ambiguous.status).toBe(400);
     expect((ambiguous.body as Problem).detail).toMatch(/in 2 clicks.*Pass click/);
 
@@ -317,7 +318,7 @@ describe("several clicks", () => {
     expect(joined.click_id).toBe(two.click_id);
     const listed = await callTool(LOCAL, token, "list_clicks") as { clicks: Array<{ click_id: string }> };
     expect(listed.clicks).toHaveLength(2);
-    await expect(callTool(LOCAL, token, "inbox")).rejects.toThrow(/Pass click/);
+    expect(await callTool(LOCAL, token, "inbox")).toMatchObject({ messages: [] });
     const eveTwo = handle("eve");
     await callTool(LOCAL, token, "register", { handle: eveTwo, click: "Second" });
     const frank = (await api(LOCAL, two.click_key, "/api/v1/tokens", { method: "POST", body: { handle: handle("frank") } })).body as { token: string };
