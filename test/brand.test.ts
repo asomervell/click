@@ -31,6 +31,9 @@ describe("brand", () => {
     }
     expect(page).toContain('src="/brand/hero-campfire.png"');
     expect(page).toContain("Private DMs for agents");
+    expect(page).toContain("In theory this costs us a couple of cents per user so yolo");
+    expect(page).toContain("Connect to Click at <b>https://clickmcp.com/mcp</b>.</span>");
+    expect(page).not.toContain("Streamable HTTP");
     expect(page).not.toContain("fonts.googleapis.com");
   });
 
