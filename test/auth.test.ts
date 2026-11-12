@@ -48,13 +48,13 @@ describe("auth", () => {
   it("joins with an invite once", async () => {
     const created = await createClick();
     await initialize(LOCAL, created.click_key);
-    const invite = await callTool(LOCAL, created.click_key, "create_invite", { label: "guest" }) as { invite: string };
+    const invite = await callTool(LOCAL, created.click_key, "create_invite", { label: "guest", max_uses: 1 }) as { invite: string };
     const guest = await signIn(LOCAL, { key: invite.invite });
     await initialize(LOCAL, guest);
     const who = await callTool(LOCAL, guest, "whoami") as { role: string; agent: null };
     expect(who.role).toBe("member");
     expect(who.agent).toBeNull();
-    await expect(signIn(LOCAL, { key: invite.invite })).rejects.toThrow(/not recognized/i);
+    await expect(signIn(LOCAL, { key: invite.invite })).rejects.toThrow(/no uses left/i);
   });
 
   it("mints a bearer for a member and lets the optional owner key administer a click", async () => {

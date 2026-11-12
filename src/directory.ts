@@ -9,6 +9,18 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 export const CODE_TTL_MS = 15 * 60 * 1000;
 const MAX_CODE_ATTEMPTS = 5;
 const MAX_MEMBERSHIPS = 50;
+export const LOBBY = "lobby";
+const LOOKING_MS = 24 * 60 * 60 * 1000;
+const OFFER_MS = 14 * 24 * 60 * 60 * 1000;
+
+export type AccountRow = {
+  id: string;
+  handle: string | null;
+  name: string | null;
+  description: string | null;
+  looking_until: number | null;
+  created_at: number;
+};
 
 export type ResolvedCredential = {
   clickId: string;
@@ -132,6 +144,140 @@ export class ClickDirectory extends DurableObject<Env> {
     this.addColumn("invites", "expires_at", "INTEGER");
     this.addColumn("invites", "revoked_at", "INTEGER");
     this.addColumn("verify_log", "pending_id", "TEXT");
+    this.addColumn("invites", "max_uses", "INTEGER");
+    this.addColumn("invites", "uses", "INTEGER NOT NULL DEFAULT 0");
+    sql.exec(`
+      CREATE TABLE IF NOT EXISTS accounts (
+        id TEXT PRIMARY KEY,
+        handle TEXT UNIQUE,
+        name TEXT,
+        description TEXT,
+        looking_until INTEGER,
+        created_at INTEGER NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS join_offers (
+        click_id TEXT NOT NULL,
+        account_id TEXT NOT NULL,
+        kind TEXT NOT NULL,
+        created_at INTEGER NOT NULL,
+        PRIMARY KEY (click_id, account_id)
+      );
+      CREATE INDEX IF NOT EXISTS join_offers_account ON join_offers (account_id);
+      CREATE TABLE IF NOT EXISTS account_log (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        ip_hash TEXT NOT NULL,
+        created_at INTEGER NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS account_log_ip ON account_log (ip_hash, created_at);
+    `);
+  }
+
+  /** A standalone agent identity, in no click yet. Rate limited per network. */
+  async createAccount(ipHash: string): Promise<{ accountId: string }> {
+    const now = Date.now();
+    const recent = this.ctx.storage.sql
+      .exec<{ n: number }>(`SELECT COUNT(*) AS n FROM account_log WHERE ip_hash = ? AND created_at > ?`, ipHash, now - HOUR_MS)
+      .one().n;
+    if (recent >= 30) throw new ClickError("Too many new agents from this network. Try again in an hour.");
+    const accountId = `acct_${crypto.randomUUID()}`;
+    this.ctx.storage.transactionSync(() => {
+      this.ctx.storage.sql.exec(`INSERT INTO account_log (ip_hash, created_at) VALUES (?, ?)`, ipHash, now);
+      this.ctx.storage.sql.exec(`DELETE FROM account_log WHERE created_at < ?`, now - 2 * HOUR_MS);
+      this.ctx.storage.sql.exec(`INSERT INTO accounts (id, created_at) VALUES (?, ?)`, accountId, now);
+    });
+    return { accountId };
+  }
+
+  async account(accountId: string): Promise<AccountRow | null> {
+    return this.ctx.storage.sql.exec<AccountRow>(`SELECT * FROM accounts WHERE id = ?`, accountId).toArray()[0] ?? null;
+  }
+
+  async accountByHandle(handle: string): Promise<AccountRow | null> {
+    return this.ctx.storage.sql.exec<AccountRow>(`SELECT * FROM accounts WHERE handle = ?`, handle).toArray()[0] ?? null;
+  }
+
+  /**
+   * Claim a global handle: the base the agent chose plus a short random suffix, so a
+   * handle cannot be guessed or squatted ahead of time. Opens a 24-hour window in which
+   * an admin's add_member goes straight through.
+   */
+  async claimHandle(accountId: string, base: string, profile: { name: string | null; description: string | null }): Promise<AccountRow> {
+    const existing = await this.account(accountId);
+    if (!existing) throw new ClickError("This connection has no Click identity.");
+    if (existing.handle) {
+      this.ctx.storage.sql.exec(`UPDATE accounts SET name = COALESCE(?, name), description = COALESCE(?, description) WHERE id = ?`, profile.name, profile.description, accountId);
+      return (await this.account(accountId))!;
+    }
+    const trimmed = base.slice(0, 27).replace(/-+$/, "") || "agent";
+    for (let attempt = 0; attempt < 8; attempt++) {
+      const suffix = [...crypto.getRandomValues(new Uint8Array(4))].map((b) => "abcdefghjkmnpqrstuvwxyz23456789"[b % 31]).join("");
+      const handle = `${trimmed}-${suffix}`;
+      const taken = this.ctx.storage.sql.exec<{ id: string }>(`SELECT id FROM accounts WHERE handle = ?`, handle).toArray()[0];
+      if (taken) continue;
+      this.ctx.storage.sql.exec(
+        `UPDATE accounts SET handle = ?, name = ?, description = ?, looking_until = ? WHERE id = ?`,
+        handle, profile.name, profile.description, Date.now() + LOOKING_MS, accountId,
+      );
+      return (await this.account(accountId))!;
+    }
+    throw new ClickError("Could not pick a handle. Try again.");
+  }
+
+  async setLooking(accountId: string, open: boolean): Promise<number | null> {
+    const until = open ? Date.now() + LOOKING_MS : null;
+    this.ctx.storage.sql.exec(`UPDATE accounts SET looking_until = ? WHERE id = ?`, until, accountId);
+    return until;
+  }
+
+  /** Pending adds (admin to agent) and requests (agent to admin). */
+  async offerJoin(clickId: string, accountId: string, kind: "add" | "request"): Promise<void> {
+    const open = this.ctx.storage.sql
+      .exec<{ n: number }>(`SELECT COUNT(*) AS n FROM join_offers WHERE ${kind === "add" ? "account_id" : "click_id"} = ?`, kind === "add" ? accountId : clickId)
+      .one().n;
+    if (open >= 50) throw new ClickError(kind === "add" ? "That agent has too many pending adds." : "This click has too many pending requests.");
+    this.ctx.storage.sql.exec(
+      `INSERT INTO join_offers (click_id, account_id, kind, created_at) VALUES (?, ?, ?, ?)
+       ON CONFLICT (click_id, account_id) DO UPDATE SET kind = excluded.kind, created_at = excluded.created_at`,
+      clickId, accountId, kind, Date.now(),
+    );
+  }
+
+  async joinOffer(clickId: string, accountId: string): Promise<{ kind: "add" | "request"; created_at: number } | null> {
+    return this.ctx.storage.sql
+      .exec<{ kind: "add" | "request"; created_at: number }>(`SELECT kind, created_at FROM join_offers WHERE click_id = ? AND account_id = ? AND created_at > ?`, clickId, accountId, Date.now() - OFFER_MS)
+      .toArray()[0] ?? null;
+  }
+
+  async clearOffer(clickId: string, accountId: string): Promise<boolean> {
+    return this.ctx.storage.sql.exec(`DELETE FROM join_offers WHERE click_id = ? AND account_id = ?`, clickId, accountId).rowsWritten > 0;
+  }
+
+  async offersForAccount(accountId: string): Promise<Array<{ click_id: string; click_name: string | null; kind: string; created_at: number }>> {
+    return this.ctx.storage.sql
+      .exec<{ click_id: string; click_name: string | null; kind: string; created_at: number }>(
+        `SELECT o.click_id, c.name AS click_name, o.kind, o.created_at FROM join_offers o JOIN clicks c ON c.id = o.click_id AND c.revoked_at IS NULL
+         WHERE o.account_id = ? AND o.created_at > ? ORDER BY o.created_at DESC`,
+        accountId, Date.now() - OFFER_MS,
+      )
+      .toArray();
+  }
+
+  async offersForClick(clickId: string): Promise<Array<{ handle: string | null; name: string | null; description: string | null; kind: string; created_at: number }>> {
+    return this.ctx.storage.sql
+      .exec<{ handle: string | null; name: string | null; description: string | null; kind: string; created_at: number }>(
+        `SELECT a.handle, a.name, a.description, o.kind, o.created_at FROM join_offers o JOIN accounts a ON a.id = o.account_id
+         WHERE o.click_id = ? AND o.created_at > ? ORDER BY o.created_at DESC`,
+        clickId, Date.now() - OFFER_MS,
+      )
+      .toArray();
+  }
+
+  async isMember(accountId: string, clickId: string): Promise<boolean> {
+    return this.membershipRows(accountId).some((row) => row.click_id === clickId && row.left_at == null && row.live === 1);
+  }
+
+  async liveMembershipCount(accountId: string): Promise<number> {
+    return this.membershipRows(accountId).filter((row) => row.left_at == null && row.live === 1).length;
   }
 
   private addColumn(table: string, column: string, type: string): void {
@@ -316,7 +462,7 @@ export class ClickDirectory extends DurableObject<Env> {
   async memberships(home: ResolvedCredential): Promise<Membership[]> {
     const accountId = home.principalId;
     let rows = this.membershipRows(accountId);
-    if (!rows.some((row) => row.click_id === home.clickId)) {
+    if (home.clickId !== LOBBY && !rows.some((row) => row.click_id === home.clickId)) {
       this.insertMembership(accountId, home.clickId, home.principalId, home.role);
       rows = this.membershipRows(accountId);
     }
@@ -357,16 +503,22 @@ export class ClickDirectory extends DurableObject<Env> {
     );
   }
 
-  /** Reserve an invite for an account that is not yet in its click. Returns the click id. */
+  /**
+   * Take one use of an invite for an account that is not yet in its click. Invites are
+   * reusable up to max_uses (older rows without max_uses are single use). Returns the click id.
+   */
   async takeInvite(tokenHash: string, accountId: string | null = null): Promise<string | null> {
     const now = Date.now();
     const invite = this.ctx.storage.sql
-      .exec<{ click_id: string; used_at: number | null; expires_at: number | null; revoked_at: number | null }>(
-        `SELECT click_id, used_at, expires_at, revoked_at FROM invites WHERE token_hash = ?`,
+      .exec<{ click_id: string; used_at: number | null; expires_at: number | null; revoked_at: number | null; uses: number; max_uses: number | null }>(
+        `SELECT click_id, used_at, expires_at, revoked_at, uses, max_uses FROM invites WHERE token_hash = ?`,
         tokenHash,
       )
       .toArray()[0];
-    if (!invite || invite.used_at != null || invite.revoked_at != null) return null;
+    if (!invite || invite.revoked_at != null) return null;
+    if (invite.used_at != null || invite.uses >= (invite.max_uses ?? 1)) {
+      throw new ClickError("That invite has no uses left. Ask the admin to make a new one.");
+    }
     if (invite.expires_at != null && invite.expires_at <= now) throw new ClickError("That invite expired. Ask the admin for a new one.");
     if (!(await this.clickExists(invite.click_id))) return null;
     if (accountId) {
@@ -377,7 +529,8 @@ export class ClickDirectory extends DurableObject<Env> {
     }
     const rows = this.ctx.storage.sql
       .exec<{ click_id: string }>(
-        `UPDATE invites SET used_at = ? WHERE token_hash = ? AND used_at IS NULL AND revoked_at IS NULL RETURNING click_id`,
+        `UPDATE invites SET uses = uses + 1, used_at = CASE WHEN uses + 1 >= COALESCE(max_uses, 1) THEN ? ELSE NULL END
+         WHERE token_hash = ? AND used_at IS NULL AND revoked_at IS NULL AND uses < COALESCE(max_uses, 1) RETURNING click_id`,
         now,
         tokenHash,
       )
@@ -437,6 +590,7 @@ export class ClickDirectory extends DurableObject<Env> {
       // A token homed here stays when its identity still lives in another click.
       for (const id of orphans) this.ctx.storage.sql.exec(`DELETE FROM api_tokens WHERE click_id = ? AND principal_id = ?`, clickId, id);
       this.ctx.storage.sql.exec(`DELETE FROM invites WHERE click_id = ?`, clickId);
+      this.ctx.storage.sql.exec(`DELETE FROM join_offers WHERE click_id = ?`, clickId);
       this.ctx.storage.sql.exec(`DELETE FROM memberships WHERE click_id = ?`, clickId);
       this.ctx.storage.sql.exec(`DELETE FROM clicks WHERE id = ?`, clickId);
     });
@@ -490,13 +644,14 @@ export class ClickDirectory extends DurableObject<Env> {
     );
   }
 
-  async rememberInvite(tokenHash: string, clickId: string, expiresAt: number | null = null): Promise<void> {
+  async rememberInvite(tokenHash: string, clickId: string, expiresAt: number | null = null, maxUses = 1): Promise<void> {
     this.ctx.storage.sql.exec(
-      `INSERT INTO invites (token_hash, click_id, created_at, expires_at) VALUES (?, ?, ?, ?)`,
+      `INSERT INTO invites (token_hash, click_id, created_at, expires_at, max_uses, uses) VALUES (?, ?, ?, ?, ?, 0)`,
       tokenHash,
       clickId,
       Date.now(),
       expiresAt,
+      maxUses,
     );
   }
 

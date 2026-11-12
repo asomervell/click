@@ -13,6 +13,7 @@ import {
   startCreateClick,
   verifyCreateClick,
 } from "./clicks";
+import { acceptAdd, addMember, declineJoin, joinRequests, openToJoin, registerWithAccountHandle, requestJoin, signupOverHttp } from "./agents";
 import { ownerKeyMatches } from "./crypto";
 import { getDirectory } from "./directory";
 import { doorbellLink } from "./doorbell";
@@ -50,10 +51,14 @@ export async function handleHttpApi(request: Request, env: Env, ctx: ExecutionCo
         const identity = await loadIdentity(env, home);
         if (!identity) return problem(401, "Unauthorized", "unauthorized");
         const joined = await joinWithInvite(env, String(body.invite ?? ""), label, identity.accountId);
-        return json({ click_id: joined.clickId, name: joined.clickName, principal_id: joined.principalId, role: joined.role, added_to_existing_identity: true }, 201);
+        const handle = await registerWithAccountHandle(env, identity, joined);
+        return json({ click_id: joined.clickId, name: joined.clickName, principal_id: joined.principalId, role: joined.role, added_to_existing_identity: true, ...(handle ? { handle } : {}) }, 201);
       }
       const joined = await joinWithInviteToken(env, String(body.invite ?? ""), label);
       return json({ token: joined.token, click_id: joined.clickId, name: joined.clickName, principal_id: joined.principalId, role: joined.role }, 201);
+    }
+    if (request.method === "POST" && path === "/api/agents/signup") {
+      return json(await signupOverHttp(env, request, await readJson(request)), 201);
     }
     if (path.startsWith("/api/operator/")) {
       // Operator maintenance, only when the deployer set OWNER_KEY_HASH. No click id needed.
@@ -142,6 +147,12 @@ async function dispatch(
   body: Record<string, unknown>,
 ): Promise<unknown> {
   if (request.method === "GET" && path === "/api/clicks") return listClicks(env, identity);
+  if (request.method === "POST" && path === "/api/members") return addMember(env, identity, { handle: String(body.handle ?? ""), click: selector(request, url, body) });
+  if (request.method === "GET" && path === "/api/join-requests") return joinRequests(env, identity);
+  if (request.method === "POST" && path === "/api/join-requests") return requestJoin(env, identity, { click: String(body.click ?? "") });
+  if (request.method === "POST" && path === "/api/join-requests/accept") return acceptAdd(env, identity, { click: String(body.click ?? "") });
+  if (request.method === "POST" && path === "/api/join-requests/decline") return declineJoin(env, identity, { handle: optionalString(body.handle) ?? null, click: optionalString(body.click) ?? null });
+  if (request.method === "POST" && path === "/api/open-to-join") return openToJoin(env, identity, body.open !== false);
   const chosen = selector(request, url, body);
   if (request.method === "POST" && path === "/api/messages") {
     const routed = await routeSend(env, identity, {
@@ -213,7 +224,8 @@ async function dispatch(
   if (request.method === "DELETE" && (path === "/api/clicks" || path === `/api/clicks/${props.clickId}`)) return deleteClick(env, props);
   if (request.method === "POST" && path === "/api/invites") {
     const hours = body.expires_in_hours == null ? undefined : Number(body.expires_in_hours);
-    return hub.createInvite(props, cleanLabel(body.label), hours);
+    const maxUses = body.max_uses == null ? undefined : Number(body.max_uses);
+    return hub.createInvite(props, cleanLabel(body.label), hours, maxUses);
   }
   if (request.method === "GET" && path === "/api/invites") {
     return hub.listInvites(props, url.searchParams.get("include_closed") === "true");

@@ -54,6 +54,8 @@ const LOCK_MS = 60_000;
 const INVITE_DEFAULT_HOURS = 7 * 24;
 const DOORBELL_LINK_MS = 30 * 60_000;
 const INVITE_MAX_HOURS = 30 * 24;
+const INVITE_DEFAULT_USES = 10;
+const INVITE_MAX_USES = 100;
 
 const CLICK_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
@@ -155,6 +157,14 @@ export class ClickHub extends DurableObject<Env> {
     this.addColumn("click_meta", "name", "TEXT");
     this.addColumn("invites", "expires_at", "INTEGER");
     this.addColumn("invites", "revoked_at", "INTEGER");
+    this.addColumn("invites", "max_uses", "INTEGER");
+    this.addColumn("invites", "uses", "INTEGER NOT NULL DEFAULT 0");
+    this.ctx.storage.sql.exec(`CREATE TABLE IF NOT EXISTS invite_uses (
+      invite_id TEXT NOT NULL,
+      principal_id TEXT NOT NULL,
+      used_at INTEGER NOT NULL,
+      PRIMARY KEY (invite_id, principal_id)
+    )`);
     this.addColumn("events", "reply_to", "TEXT");
     this.ctx.storage.sql.exec(`
       CREATE TABLE IF NOT EXISTS event_subs (
@@ -957,11 +967,12 @@ export class ClickHub extends DurableObject<Env> {
     return { token, token_id: tokenId, principal_id: principalId, role, handle: registered };
   }
 
-  async createInvite(props: ClickProps, label: string | null, expiresInHours?: number): Promise<{
+  async createInvite(props: ClickProps, label: string | null, expiresInHours?: number, maxUses?: number): Promise<{
     invite: string;
     id: string;
     click_id: string;
     expires_at: number | null;
+    max_uses: number;
     paste_line: string;
   }> {
     this.assertAdmin(props.role);
@@ -969,6 +980,10 @@ export class ClickHub extends DurableObject<Env> {
     const hours = expiresInHours ?? INVITE_DEFAULT_HOURS;
     if (!Number.isFinite(hours) || hours <= 0 || hours > INVITE_MAX_HOURS) {
       throw new ClickError(`expires_in_hours must be between 0 and ${INVITE_MAX_HOURS}.`);
+    }
+    const uses = maxUses ?? INVITE_DEFAULT_USES;
+    if (!Number.isInteger(uses) || uses < 1 || uses > INVITE_MAX_USES) {
+      throw new ClickError(`max_uses must be a whole number from 1 to ${INVITE_MAX_USES}.`);
     }
     const open = this.ctx.storage.sql
       .exec<{ n: number }>(
@@ -983,51 +998,72 @@ export class ClickHub extends DurableObject<Env> {
     const expiresAt = Math.round(now + hours * 3_600_000);
     const tokenHash = await sha256Hex(invite);
     this.ctx.storage.sql.exec(
-      `INSERT INTO invites (id, token_hash, label, created_by, created_at, expires_at) VALUES (?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO invites (id, token_hash, label, created_by, created_at, expires_at, max_uses, uses) VALUES (?, ?, ?, ?, ?, ?, ?, 0)`,
       id,
       tokenHash,
       label,
       props.principalId,
       now,
       expiresAt,
+      uses,
     );
-    await getDirectory(this.env).rememberInvite(tokenHash, props.clickId, expiresAt);
-    return { invite, id, click_id: props.clickId, expires_at: expiresAt, paste_line: inviteLine(invite) };
+    await getDirectory(this.env).rememberInvite(tokenHash, props.clickId, expiresAt, uses);
+    return { invite, id, click_id: props.clickId, expires_at: expiresAt, max_uses: uses, paste_line: inviteLine(invite) };
   }
 
   async listInvites(props: ClickProps, includeClosed = false): Promise<Array<{
     id: string;
     label: string | null;
-    status: "open" | "used" | "revoked" | "expired";
+    status: "open" | "used up" | "revoked" | "expired";
     created_at: number;
     expires_at: number | null;
-    used_at: number | null;
-    used_by: string | null;
+    max_uses: number;
+    uses: number;
+    uses_left: number;
+    joined: string[];
   }>> {
     this.assertAdmin(props.role);
     const now = Date.now();
+    const joinedBy = new Map<string, string[]>();
+    for (const row of this.ctx.storage.sql
+      .exec<{ invite_id: string; handle: string | null }>(
+        `SELECT u.invite_id, a.handle FROM invite_uses u LEFT JOIN agents a ON a.principal_id = u.principal_id ORDER BY u.used_at`,
+      )
+      .toArray()) {
+      const list = joinedBy.get(row.invite_id) ?? [];
+      list.push(row.handle ?? "(not registered yet)");
+      joinedBy.set(row.invite_id, list);
+    }
     return this.ctx.storage.sql
-      .exec<{ id: string; label: string | null; created_at: number; expires_at: number | null; used_at: number | null; revoked_at: number | null; used_by: string | null }>(
-        `SELECT i.id, i.label, i.created_at, i.expires_at, i.used_at, i.revoked_at, a.handle AS used_by
+      .exec<{ id: string; label: string | null; created_at: number; expires_at: number | null; used_at: number | null; revoked_at: number | null; used_by: string | null; max_uses: number | null; uses: number }>(
+        `SELECT i.id, i.label, i.created_at, i.expires_at, i.used_at, i.revoked_at, a.handle AS used_by, i.max_uses, i.uses
          FROM invites i LEFT JOIN agents a ON a.principal_id = i.used_by
          ORDER BY i.created_at DESC LIMIT 200`,
       )
       .toArray()
-      .map((row) => ({
-        id: row.id,
-        label: row.label,
-        status: row.revoked_at != null
-          ? "revoked" as const
-          : row.used_at != null
-            ? "used" as const
-            : row.expires_at != null && row.expires_at <= now
-              ? "expired" as const
-              : "open" as const,
-        created_at: row.created_at,
-        expires_at: row.expires_at,
-        used_at: row.used_at,
-        used_by: row.used_by,
-      }))
+      .map((row) => {
+        const max = row.max_uses ?? 1;
+        // Rows from before reusable invites count a use through used_at only.
+        const uses = row.max_uses == null ? (row.used_at != null ? 1 : 0) : row.uses;
+        const joined = joinedBy.get(row.id) ?? (row.used_by ? [row.used_by] : []);
+        return {
+          id: row.id,
+          label: row.label,
+          status: row.revoked_at != null
+            ? "revoked" as const
+            : uses >= max
+              ? "used up" as const
+              : row.expires_at != null && row.expires_at <= now
+                ? "expired" as const
+                : "open" as const,
+          created_at: row.created_at,
+          expires_at: row.expires_at,
+          max_uses: max,
+          uses,
+          uses_left: Math.max(0, max - uses),
+          joined,
+        };
+      })
       .filter((row) => includeClosed || row.status === "open");
   }
 
@@ -1046,12 +1082,20 @@ export class ClickHub extends DurableObject<Env> {
   }
 
   async markInviteUsed(tokenHash: string, principalId: string): Promise<void> {
-    this.ctx.storage.sql.exec(
-      `UPDATE invites SET used_at = ?, used_by = ? WHERE token_hash = ? AND used_at IS NULL`,
-      Date.now(),
-      principalId,
-      tokenHash,
-    );
+    const now = Date.now();
+    this.ctx.storage.transactionSync(() => {
+      const invite = this.ctx.storage.sql
+        .exec<{ id: string }>(
+          `UPDATE invites SET uses = uses + 1, used_by = ?,
+             used_at = CASE WHEN uses + 1 >= COALESCE(max_uses, 1) THEN ? ELSE NULL END
+           WHERE token_hash = ? AND used_at IS NULL RETURNING id`,
+          principalId,
+          now,
+          tokenHash,
+        )
+        .toArray()[0];
+      if (invite) this.ctx.storage.sql.exec(`INSERT OR IGNORE INTO invite_uses (invite_id, principal_id, used_at) VALUES (?, ?, ?)`, invite.id, principalId, now);
+    });
   }
 
   async revokeToken(props: ClickProps, tokenId: string): Promise<{ revoked: boolean }> {

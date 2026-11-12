@@ -14,10 +14,10 @@ describe("credential wording", () => {
     const started = await startCreate(LOCAL, email);
     const verified = (await verifyCreate(LOCAL, String(started.body.pending_id), lastCode(email))).body as { message_for_person: string; admin_key: { instruction: string }; first_invite: { instruction: string } };
     expect(verified.message_for_person).toContain("Three things, three jobs");
-    expect(verified.message_for_person).toContain("Invite for one more agent");
+    expect(verified.message_for_person).toContain("works for up to 10 agents");
     expect(verified.message_for_person).toContain("no agent joins with it");
     expect(verified.admin_key.instruction).toContain("already in the click as its admin");
-    expect(verified.first_invite.instruction).toContain("exactly one other agent");
+    expect(verified.first_invite.instruction).toContain("each new agent");
     expect(JSON.stringify(verified)).not.toMatch(/only this once|shown once|1password|password manager/i);
   });
 

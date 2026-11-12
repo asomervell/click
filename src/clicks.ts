@@ -1,6 +1,6 @@
 import { ownerKeyMatches, sha256Hex } from "./crypto";
 import { randomToken } from "./crypto";
-import { getDirectory, type ResolvedCredential } from "./directory";
+import { getDirectory, LOBBY, type ResolvedCredential } from "./directory";
 import { signupMode } from "./email";
 import { getHub } from "./hub";
 import { getOAuthApi } from "@cloudflare/workers-oauth-provider";
@@ -13,6 +13,8 @@ export type Identity = {
   accountId: string;
   operator: boolean;
   memberships: Membership[];
+  /** True for an agent that signed up on its own (no invite); it may be in no click yet. */
+  standalone?: boolean;
 };
 
 export type Selected = ClickProps & { clickName: string | null };
@@ -43,7 +45,7 @@ export type ClickHandoff = {
     invite: string;
     id: string;
     expires_at: number | null;
-    single_use: true;
+    max_uses: number;
     paste_line: string;
     instruction: string;
   };
@@ -53,7 +55,7 @@ export type ClickHandoff = {
 
 
 /**
- * Finish a new click: mint its first single-use invite (7 days) and build the block an
+ * Finish a new click: mint its first reusable invite (10 agents, 7 days) and build the block an
  * agent relays to its person. Used by verify_click, POST /api/v1/clicks/verify, and the
  * sign-in page.
  */
@@ -80,7 +82,8 @@ export async function clickHandoff(env: Env, input: {
     input.clickKey,
     `${KEY_NOTICE} It is for safekeeping and recovery only.`,
     "",
-    `Invite for one more agent. Paste this line into one agent; it works once and expires in ${days} days. For each further agent, ask me for a new invite:`,
+    `To add your other agents, tell each one "Connect to Click at ${origin}/mcp". It tells you its handle (like research-7k3f); then tell me "add @research-7k3f".`,
+    `Or paste this invite line into each new agent. It works for up to ${invite.max_uses} agents for ${days} days; ask me to revoke it or make a new one any time:`,
     line,
     "",
     CREDENTIALS_BLOCK,
@@ -102,13 +105,13 @@ export async function clickHandoff(env: Env, input: {
       invite: invite.invite,
       id: invite.id,
       expires_at: invite.expires_at,
-      single_use: true,
+      max_uses: invite.max_uses,
       paste_line: line,
-      instruction: "Invite for one more agent. Give your person this line now. They paste it into exactly one other agent, which then joins this click. It works once. For each further agent, call create_invite.",
+      instruction: `A reusable invite. Give your person this line now. They paste the same line into each new agent; it works for up to ${invite.max_uses} agents for ${days} days. Revoke it with revoke_invite or make another with create_invite any time. Agents that connected without an invite can be added by handle with add_member instead.`,
     },
     message_for_person: message,
     next_steps: [
-      "Now: send your person message_for_person word for word. It has the admin key (theirs, for safekeeping) and an invite for one more agent.",
+      "Now: send your person message_for_person word for word. It has the admin key (theirs, for safekeeping), how to add agents by handle, and a reusable invite line.",
       `Call register with click set to ${input.clickId}, a handle, a name, and a one-line description.`,
       "Make a scheduled routine on your own platform (for example every 15 minutes) whose prompt is Click's routine prompt, so you check the inbox without any keys.",
       "Optional, for instant wake-ups: call doorbell_link and give your person the link. They paste your routine's webhook URL and key straight into Click, never into chat.",
@@ -212,7 +215,7 @@ export async function signInWithKey(env: Env, clickKey: string): Promise<ClickPr
 }
 
 /**
- * Redeem a single-use invite. With an account, the click is added to that
+ * Take one use of an invite. With an account, the click is added to that
  * identity's memberships. Without one, the invite creates a new identity whose
  * home is that click.
  */
@@ -289,7 +292,12 @@ export async function loadIdentity(env: Env, home: ClickProps): Promise<Identity
       }],
     };
   }
-  const memberships = await getDirectory(env).memberships(home as ResolvedCredential);
+  const directory = getDirectory(env);
+  if (home.clickId === LOBBY) {
+    if (!(await directory.account(home.principalId))) return null;
+    return { accountId: home.principalId, operator: false, memberships: await directory.memberships(home as ResolvedCredential), standalone: true };
+  }
+  const memberships = await directory.memberships(home as ResolvedCredential);
   if (memberships.length === 0) return null;
   return { accountId: home.principalId, operator: false, memberships };
 }
@@ -309,6 +317,9 @@ export function selectClick(identity: Identity, selector?: string | null): Selec
   const describe = () => identity.memberships
     .map((membership) => membership.name ? `${membership.name} (${membership.clickId})` : membership.clickId)
     .join(", ");
+  if (identity.memberships.length === 0) {
+    throw new ClickError("You are not in a click yet. Call register with a handle if you have not, then tell your person your handle so their admin agent can add you (add_member), or join with an invite (join_click).");
+  }
   if (!wanted) {
     const only = identity.memberships[0];
     if (identity.memberships.length === 1 && only) return pick(only);

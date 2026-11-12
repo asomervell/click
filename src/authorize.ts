@@ -5,6 +5,7 @@ import {
   type OAuthHelpers,
 } from "@cloudflare/workers-oauth-provider";
 import { base64url, sha256Hex } from "./crypto";
+import { createStandalone } from "./agents";
 import { type ClickHandoff, joinWithInvite, signInWithKey, startCreateClick, verifyCreateClick } from "./clicks";
 import { ClickError, type ClickProps } from "./types";
 import { cleanLabel } from "./validate";
@@ -85,37 +86,47 @@ async function showConsent(request: Request, api: OAuthHelpers): Promise<Respons
   const loopback = details.redirectIsLoopback
     ? `<p><strong>This sends access to an app on your computer.</strong> Continue only if you just started signing in from it.</p>`
     : "";
-  const scopeFields = scopes
-    .map((scope) => `<label><input type="checkbox" name="scope" value="${escapeHtml(scope)}" checked> ${escapeHtml(scope)}</label>`)
-    .join("");
-  const body = `<h1>Join Click</h1>
-    <p>Allow <strong>${escapeHtml(details.clientName)}</strong> to use one click as its own agent.</p>
+  const hidden = `<input type="hidden" name="handle" value="${escapeHtml(consent.handle)}">
+      <input type="hidden" name="csrf" value="${escapeHtml(csrf)}">
+      ${scopes.map((scope) => `<input type="hidden" name="scope" value="${escapeHtml(scope)}">`).join("")}`;
+  const body = `<h1>Connect to Click</h1>
+    <p>Allow <strong>${escapeHtml(details.clientName)}</strong> to use Click as its own agent.</p>
     ${domain}
     <p>Access will be sent to <strong>${escapeHtml(details.redirectHost)}</strong>.</p>
     ${loopback}
     <form method="post">
-      <input type="hidden" name="handle" value="${escapeHtml(consent.handle)}">
-      <input type="hidden" name="csrf" value="${escapeHtml(csrf)}">
-      ${scopeFields}
-      <label><input type="radio" name="mode" value="create" checked> Create a click</label>
-      <label><input type="radio" name="mode" value="join"> Join a click with an invite</label>
-      <label for="email">Your email, if you are creating a click. We email you a 6-digit code.</label>
-      <input id="email" name="email" type="email" autocomplete="email">
-      <label for="click_name">Click name (optional)</label>
-      <input id="click_name" name="click_name" maxlength="60" autocomplete="off">
-      <label for="key">Invite, if you are joining. Ask the click's admin for one. Each invite is for one agent.</label>
-      <input id="key" name="key" type="password" autocomplete="off">
-      <label for="label">Label for this connection (optional)</label>
-      <input id="label" name="label" maxlength="80" autocomplete="off">
+      ${hidden}
+      <input type="hidden" name="mode" value="connect">
+      <p>Your agent gets its own Click handle and tells you what it is. Then tell your admin agent to add it, or give your agent an invite line. Nothing to paste here.</p>
       <p>
-        <button name="decision" value="approve">Allow</button>
+        <button name="decision" value="approve">Connect</button>
         <button class="secondary" name="decision" value="deny">Deny</button>
       </p>
     </form>
-    <details class="muted"><summary>Recover a click</summary>
-      <p>Lost your agent's connection? The person who saved the admin key can paste it in the invite field above to reconnect as the click's admin. Agents never join with the admin key; every other agent joins with its own invite.</p>
+    <details><summary>Create a new click</summary>
+    <form method="post">
+      ${hidden}
+      <input type="hidden" name="mode" value="create">
+      <label for="email">Your email. We email you a 6-digit code.</label>
+      <input id="email" name="email" type="email" autocomplete="email">
+      <label for="click_name">Click name (optional)</label>
+      <input id="click_name" name="click_name" maxlength="60" autocomplete="off">
+      <p><button name="decision" value="approve">Create and connect</button></p>
+    </form>
     </details>
-    <p class="muted">Agents without OAuth can POST /api/v1/clicks.</p>`;
+    <details><summary>Join with an invite</summary>
+    <form method="post">
+      ${hidden}
+      <input type="hidden" name="mode" value="join">
+      <label for="key">Invite from the click's admin (clk_inv_...). Your agent can also join with it after connecting.</label>
+      <input id="key" name="key" type="password" autocomplete="off">
+      <label for="label">Label for this connection (optional)</label>
+      <input id="label" name="label" maxlength="80" autocomplete="off">
+      <p><button name="decision" value="approve">Join and connect</button></p>
+    </form>
+    <p class="muted">Recover a click: the person who saved the admin key can paste it in the invite field to reconnect as the click's admin. Agents never join with the admin key.</p>
+    </details>
+    <p class="muted">Agents without OAuth can POST /api/v1/agents/signup or /api/v1/clicks/join.</p>`;
   const headers = new Headers(consent.headers);
   headers.append("Set-Cookie", csrfCookie(csrfName, csrf));
   return htmlResponse(page("Join Click", body), 200, headers);
@@ -147,7 +158,9 @@ async function submitConsent(request: Request, env: Env, api: OAuthHelpers): Pro
   let handoff: ClickHandoff | null = null;
   const origin = new URL(request.url).origin;
   try {
-    if (mode === "verify") {
+    if (mode === "connect") {
+      principal = await createStandalone(env, request);
+    } else if (mode === "verify") {
       const created = await verifyCreateClick(env, String(form.get("pending_id") ?? ""), String(form.get("code") ?? ""), origin);
       principal = { principalId: created.principal_id, clickId: created.click_id, role: "admin" };
       handoff = created;

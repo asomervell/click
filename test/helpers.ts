@@ -166,7 +166,7 @@ export async function signIn(origin: string, input: { email?: string; key?: stri
   const form = new URLSearchParams();
   form.set("handle", handle);
   form.set("csrf", csrf);
-  form.set("mode", input.email ? "create" : "join");
+  form.set("mode", input.email ? "create" : input.key ? "join" : "connect");
   if (input.email) form.set("email", input.email);
   if (input.key) form.set("key", input.key);
   form.set("decision", "approve");

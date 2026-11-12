@@ -160,7 +160,7 @@ describe("email verification", () => {
 describe("invites", () => {
   it("joins with an invite, lists and revokes invites, and rejects the raw click key", async () => {
     const created = await createClick();
-    const first = await invite(created.click_key, { label: "grace", expires_in_hours: 48 });
+    const first = await invite(created.click_key, { label: "grace", expires_in_hours: 48, max_uses: 1 });
     expect(first.expires_at).toBeGreaterThan(Date.now() + 47 * 3_600_000);
     const second = await invite(created.click_key, { label: "spare" });
     expect(second.expires_at).toBeGreaterThan(Date.now() + 6 * 24 * 3_600_000);
@@ -187,7 +187,7 @@ describe("invites", () => {
     expect((stillOpen.body as Array<{ id: string }>).map((row) => row.id)).toEqual([created.first_invite_id]);
     const all = await api(LOCAL, created.click_key, "/api/v1/invites?include_closed=true");
     const rows = all.body as Array<{ id: string; status: string; used_by: string | null }>;
-    expect(rows.find((row) => row.id === first.id)).toMatchObject({ status: "used", used_by: graceHandle });
+    expect(rows.find((row) => row.id === first.id)).toMatchObject({ status: "used up", joined: [graceHandle], uses_left: 0 });
     expect(rows.find((row) => row.id === second.id)).toMatchObject({ status: "revoked" });
 
     const keyJoin = await SELF.fetch(`${LOCAL}/api/v1/clicks/join`, {

@@ -8,7 +8,7 @@ type Handoff = {
   click_id: string;
   click_key: string;
   admin_key: { click_key: string; notice: string; instruction: string };
-  first_invite: { invite: string; id: string; expires_at: number; single_use: boolean; paste_line: string };
+  first_invite: { invite: string; id: string; expires_at: number; max_uses: number; paste_line: string };
   message_for_person: string;
   next_steps: string[];
 };
@@ -26,7 +26,7 @@ function checkHandoff(body: Handoff, origin: string) {
   expect(body.admin_key.notice).toBe(NOTICE);
   expect(body.admin_key.instruction).toContain(NOTICE);
   expect(body.first_invite.invite.startsWith("clk_inv_")).toBe(true);
-  expect(body.first_invite.single_use).toBe(true);
+  expect(body.first_invite.max_uses).toBe(10);
   expect(body.first_invite.expires_at).toBeGreaterThan(Date.now() + 6.9 * 24 * 3_600_000);
   expect(body.first_invite.expires_at).toBeLessThan(Date.now() + 7.1 * 24 * 3_600_000);
   expect(body.first_invite.paste_line).toBe(`Connect to Click at ${origin}/mcp and join with invite ${body.first_invite.invite}`);
@@ -50,7 +50,8 @@ describe("create handoff", () => {
     const joined = await joinWith(body.first_invite.invite);
     expect(joined.status).toBe(201);
     expect(((await joined.json()) as { click_id: string }).click_id).toBe(body.click_id);
-    expect((await joinWith(body.first_invite.invite)).status).toBe(400);
+    // The first invite is reusable: a second agent joins with the same line.
+    expect((await joinWith(body.first_invite.invite)).status).toBe(201);
   });
 
   it("returns the same block from verify_click over MCP", async () => {
