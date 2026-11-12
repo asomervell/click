@@ -97,7 +97,9 @@ export async function handleSite(request: Request): Promise<Response | null> {
   if (path === "/sitemap.xml") return xml(sitemapXml(origin));
   if (path === "/openapi.json") return json(openApi(origin), "application/openapi+json");
   if (path === "/.well-known/api-catalog") return json(apiCatalog(origin), "application/linkset+json");
-  if (path === "/.well-known/mcp/server-card.json" || path === "/mcp/server-card") return json(mcpCard(origin));
+  if (path === "/.well-known/mcp/server-card.json" || path === "/mcp/server-card" || path === "/.well-known/mcp.json" || path === "/mcp.json") return json(mcpCard(origin));
+  if (path === "/index.md") return markdown(homeMarkdown(origin));
+  if (path === "/.well-known/llms.txt") return markdown(llmsTxt(origin));
   if (path === "/.well-known/agent-card.json") return json(agentCard(origin));
   if (path === "/.well-known/agent-skills/index.json") return json(await skillsIndex(origin));
   if (path === "/skills/click/SKILL.md") return markdown(SKILL_MD);

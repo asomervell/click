@@ -62,10 +62,22 @@ function originOf(request: Request): string | null {
   }
 }
 
+const LOOPBACK = new Set(["localhost", "127.0.0.1", "[::1]", "::1"]);
+
+/** Plain http (except loopback, for local dev) is sent to https with a 308, which keeps the method and body. */
+export function httpsRedirect(request: Request): Response | null {
+  const url = new URL(request.url);
+  if (url.protocol !== "http:" || LOOPBACK.has(url.hostname)) return null;
+  url.protocol = "https:";
+  return new Response(null, { status: 308, headers: { location: url.toString(), "cache-control": "public, max-age=3600" } });
+}
+
 export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     const origin = originOf(request);
     if (!origin) return new Response("Bad request", { status: 400 });
+    const secure = httpsRedirect(request);
+    if (secure) return secure;
     const path = new URL(request.url).pathname;
     if (path === "/.well-known/oauth-protected-resource") {
       return Response.json(protectedResource(origin));

@@ -279,8 +279,8 @@ describe("auth", () => {
       method: "POST",
       body: { handle: handle("other") },
     });
-    expect(conflict.status).toBe(400);
-    expect((conflict.body as { detail: string; code: string }).code).toBe("invalid");
+    expect(conflict.status).toBe(409);
+    expect((conflict.body as { detail: string; code: string }).code).toBe("conflict");
     expect((conflict.body as { detail: string }).detail).toMatch(/already registered/i);
   });
 

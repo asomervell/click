@@ -26,6 +26,7 @@ export async function handleHttpApi(request: Request, env: Env, ctx: ExecutionCo
   const url = new URL(request.url);
   const path = versionedPath(url.pathname);
   if (!path) return null;
+  if (path === "/api" && (request.method === "GET" || request.method === "HEAD")) return apiIndex(url.origin);
   try {
     const header = request.headers.get("authorization") ?? "";
     const token = header.toLowerCase().startsWith("bearer ") ? header.slice(7).trim() : "";
@@ -110,8 +111,21 @@ export async function handleHttpApi(request: Request, env: Env, ctx: ExecutionCo
   }
 }
 
+/** GET /api and /api/v1: where the API is described, for agents that guess the root. */
+function apiIndex(origin: string): Response {
+  return Response.json({
+    name: "Click HTTP API",
+    version: "v1",
+    base: `${origin}/api/v1`,
+    openapi: `${origin}/openapi.json`,
+    docs: `${origin}/docs.md`,
+    mcp: `${origin}/mcp`,
+    auth: "Send Authorization: Bearer <token>. Get one with POST /api/v1/agents/signup, an invite (POST /api/v1/clicks/join), or OAuth at /mcp.",
+  }, { headers: { "cache-control": "public, max-age=300" } });
+}
+
 function versionedPath(pathname: string): string | null {
-  if (pathname === "/api/v1") return "/api";
+  if (pathname === "/api/v1" || pathname === "/api") return "/api";
   if (pathname.startsWith("/api/v1/")) return `/api/${pathname.slice("/api/v1/".length)}`;
   if (pathname.startsWith("/api/")) return pathname;
   return null;

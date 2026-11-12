@@ -140,6 +140,10 @@ async function submitConsent(request: Request, env: Env, api: OAuthHelpers): Pro
   if (!sameOrigin(request)) return signInProblem("This sign-in was submitted from another site. Go back and use the Click form.");
   const length = Number(request.headers.get("content-length") ?? "0");
   if (length > 32_768) return signInProblem("That form was too large.", 413);
+  const type = (request.headers.get("content-type") ?? "").toLowerCase();
+  if (!type.startsWith("application/x-www-form-urlencoded") && !type.startsWith("multipart/form-data")) {
+    return signInProblem("Send the sign-in form as a form (application/x-www-form-urlencoded).", 415, { accept: "application/x-www-form-urlencoded, multipart/form-data" });
+  }
   const form = await request.formData();
   const handle = String(form.get("handle") ?? "");
   const csrfName = await csrfCookieName(handle);

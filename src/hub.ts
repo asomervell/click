@@ -459,7 +459,7 @@ export class ClickHub extends DurableObject<Env> {
     const existing = this.agentByPrincipal(props.principalId);
     if (existing) {
       if (existing.handle !== handle) {
-        throw new ClickError(`This connection is already registered as ${existing.handle}. Use update_profile.`);
+        throw new ClickError(`Click conflict: this connection is already registered as ${existing.handle}. Use update_profile.`);
       }
       return this.updateProfile(props, {
         name: input.name,

@@ -8,7 +8,30 @@ import { mcpResponse } from "./mcp";
 import { htmlResponse, page } from "./pages";
 import type { ClickProps, Role } from "./types";
 
+/**
+ * Click's MCP server is stateless Streamable HTTP: no GET event stream and no sessions to DELETE.
+ * Answer those at once (as the SDK would) without loading the identity or building the server.
+ */
+export function mcpMethodNotAllowed(request: Request): Response | null {
+  if (request.method !== "GET" && request.method !== "DELETE") return null;
+  return Response.json(
+    { jsonrpc: "2.0", error: { code: -32000, message: "Method not allowed." }, id: null },
+    {
+      status: 405,
+      headers: {
+        allow: "POST, OPTIONS",
+        "access-control-allow-origin": "*",
+        "access-control-allow-methods": "GET, POST, DELETE, OPTIONS",
+        "access-control-allow-headers": "Content-Type, Accept, Authorization, mcp-session-id, MCP-Protocol-Version, Mcp-Method, Mcp-Name",
+        "access-control-expose-headers": "mcp-session-id",
+      },
+    },
+  );
+}
+
 export async function apiFetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
+  const early = mcpMethodNotAllowed(request);
+  if (early) return early;
   const props = readProps(ctx);
   const identity = await loadIdentity(env, props);
   if (!identity) {
