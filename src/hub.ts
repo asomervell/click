@@ -12,7 +12,7 @@ import {
   requireWebhookKey,
 } from "./validate";
 import { postDoorbell, retryDelayMs, type WakeOutcome } from "./webhook";
-import { eventBody, eventRetryDelayMs, type EventOutcome, postEvent } from "./events";
+import { callbackHost, eventBody, eventRetryDelayMs, type EventOutcome, logEvent, postEvent } from "./events";
 
 type AgentRow = {
   id: string;
@@ -1336,7 +1336,18 @@ export class ClickHub extends DurableObject<Env> {
       for (const job of jobs) {
         summary.attempted += 1;
         const outcome = await postEvent({ url: job.url, secret: job.secret, eventId: job.id, subId: job.subId, body: job.body });
-        summary[this.recordEvent(job, outcome)] += 1;
+        const state = this.recordEvent(job, outcome);
+        summary[state] += 1;
+        logEvent("deliver", {
+          sub: job.subId,
+          event: job.id,
+          host: callbackHost(job.url),
+          click: click.id,
+          attempt: job.attempts,
+          ok: outcome.ok,
+          state,
+          ...(outcome.ok ? {} : { error: outcome.error }),
+        });
       }
     }
     await this.scheduleAlarm();

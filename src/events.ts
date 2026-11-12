@@ -82,6 +82,26 @@ function secretOk(secret: unknown): secret is string {
   }
 }
 
+/**
+ * One structured log line per MCP Events step, kept apart from the doorbell's logs so a
+ * subscription can be followed end to end: subscribe, verify, deliver, unsubscribe, expire.
+ * Logs carry the subscription id and the callback host only: never the secret, the full
+ * callback URL (its path can be a capability), or message text.
+ */
+export function logEvent(stage: string, fields: Record<string, unknown>): void {
+  const line = JSON.stringify({ message: "mcp_event", stage, ...fields });
+  if (fields.ok === false) console.warn(line);
+  else console.log(line);
+}
+
+export function callbackHost(url: string): string {
+  try {
+    return new URL(url).host;
+  } catch {
+    return "invalid";
+  }
+}
+
 class RpcError extends Error {
   constructor(readonly code: number, message: string, readonly data?: unknown) {
     super(message);
@@ -195,9 +215,18 @@ async function subscribe(env: Env, identity: Identity, params: Record<string, un
   const delivery = readDelivery(params.delivery, true);
   const hubs = await targets(env, identity, args);
   const id = await subscriptionId(identity.accountId, delivery.url, EVENT_NAME, args);
-  await verifyCallback(delivery.url, delivery.secret!, id, fetchImpl);
+  const host = callbackHost(delivery.url);
+  logEvent("subscribe", { sub: id, host, clicks: hubs.length, filtered: Boolean(args.click), ttl_ms: params.ttlMs ?? "default" });
+  try {
+    await verifyCallback(delivery.url, delivery.secret!, id, fetchImpl);
+  } catch (error) {
+    logEvent("verify", { sub: id, host, ok: false, ...(error instanceof RpcError ? { reason: (error.data as { reason?: string } | undefined)?.reason, status: (error.data as { status?: number } | undefined)?.status } : { reason: "error" }) });
+    throw error;
+  }
+  logEvent("verify", { sub: id, host, ok: true });
   const expiresAt = Date.now() + grantTtl(params.ttlMs);
   await Promise.all(hubs.map((props) => getHub(env, props.clickId).eventSubscribe(props, { id, url: delivery.url, secret: delivery.secret!, expiresAt })));
+  logEvent("subscribed", { sub: id, host, clicks: hubs.length, refresh_before: new Date(expiresAt).toISOString() });
   return { id, refreshBefore: new Date(expiresAt).toISOString(), cursor: null, truncated: false };
 }
 
@@ -208,6 +237,7 @@ async function unsubscribe(env: Env, identity: Identity, params: Record<string, 
   // The id is derived from the caller's own account, so only its own subscription can be removed.
   const id = await subscriptionId(identity.accountId, delivery.url, EVENT_NAME, args);
   await Promise.all(identity.memberships.map((m) => getHub(env, m.clickId).eventUnsubscribe({ principalId: m.principalId, clickId: m.clickId, role: m.role }, id).catch(() => undefined)));
+  logEvent("unsubscribe", { sub: id, host: callbackHost(delivery.url) });
   return {};
 }
 
@@ -215,12 +245,18 @@ export async function handleEventsRpc(env: Env, identity: Identity, message: { i
   const id = message.id ?? null;
   const params = (message.params && typeof message.params === "object" ? message.params : {}) as Record<string, unknown>;
   try {
-    if (message.method === "events/list") return { jsonrpc: "2.0", id, result: { events: [EVENT_DEFINITION] } };
+    if (message.method === "events/list") {
+      logEvent("list", { memberships: identity.memberships.length });
+      return { jsonrpc: "2.0", id, result: { events: [EVENT_DEFINITION] } };
+    }
     if (message.method === "events/subscribe") return { jsonrpc: "2.0", id, result: await subscribe(env, identity, params, fetchImpl) };
     if (message.method === "events/unsubscribe") return { jsonrpc: "2.0", id, result: await unsubscribe(env, identity, params) };
     return { jsonrpc: "2.0", id, error: { code: -32601, message: `Method not found: ${message.method}` } };
   } catch (error) {
-    if (error instanceof RpcError) return { jsonrpc: "2.0", id, error: { code: error.code, message: error.message, ...(error.data ? { data: error.data } : {}) } };
+    if (error instanceof RpcError) {
+      if (error.code !== CALLBACK_ENDPOINT_ERROR) logEvent("rejected", { method: message.method, ok: false, code: error.code, reason: error.message });
+      return { jsonrpc: "2.0", id, error: { code: error.code, message: error.message, ...(error.data ? { data: error.data } : {}) } };
+    }
     const text = error instanceof Error ? error.message : "";
     if (error instanceof ClickError || (text && !/sql|sqlite|durable object|internal error/i.test(text))) return { jsonrpc: "2.0", id, error: { code: -32602, message: text } };
     console.error(JSON.stringify({ message: "events_failed", method: message.method }));
@@ -228,7 +264,25 @@ export async function handleEventsRpc(env: Env, identity: Identity, message: { i
   }
 }
 
-/** Add capabilities.events to an initialize result, in a JSON or SSE body. */
+export const SERVER_INFO = { name: "click", version: "1.2.0" };
+
+/** Whether a request speaks the stateless 2026-07-28 protocol (MCP 2.0) or later. */
+export function isModernRequest(request: Request, params: unknown): boolean {
+  const header = request.headers.get("mcp-protocol-version");
+  const meta = params && typeof params === "object" ? (params as { _meta?: Record<string, unknown> })._meta : undefined;
+  const claimed = header ?? (typeof meta?.["io.modelcontextprotocol/protocolVersion"] === "string" ? String(meta["io.modelcontextprotocol/protocolVersion"]) : "");
+  return claimed >= "2026-07-28";
+}
+
+/** 2026-07-28 results carry resultType and the server's identity in _meta. */
+export function modernResult(response: RpcResponse): RpcResponse {
+  if (response.result === undefined || !response.result || typeof response.result !== "object") return response;
+  const result = response.result as Record<string, unknown>;
+  const meta = (result._meta && typeof result._meta === "object" ? result._meta : {}) as Record<string, unknown>;
+  return { ...response, result: { resultType: "complete", ...result, _meta: { ...meta, "io.modelcontextprotocol/serverInfo": SERVER_INFO } } };
+}
+
+/** Add capabilities.events to an initialize or server/discover result, in a JSON or SSE body. */
 export async function withEventsCapability(response: Response): Promise<Response> {
   const type = response.headers.get("content-type") ?? "";
   const text = await response.text();

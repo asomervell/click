@@ -15,7 +15,7 @@ import {
 } from "./clicks";
 import { acceptAdd, accountStatus, addMember, approveJoin, claimHandle, declineJoin, deleteIdentity, joinRequests, openToJoin, registerWithAccountHandle, renameHandle, requestJoin } from "./agents";
 import { doorbellLink } from "./doorbell";
-import { handleEventsRpc, isEventsMethod, withEventsCapability } from "./events";
+import { handleEventsRpc, isEventsMethod, isModernRequest, modernResult, SERVER_INFO, withEventsCapability } from "./events";
 import { getHub } from "./hub";
 import { forgetIdentities } from "./identity-cache";
 import { nudgeWaiters } from "./wait";
@@ -97,7 +97,7 @@ function withClick<T extends z.ZodRawShape>(shape: T) {
 }
 
 export function buildServer(env: Env, ctx: ExecutionContext, identity: Identity): McpServer {
-  const server = new McpServer({ name: "click", version: "1.2.0" }, { instructions: SERVER_INSTRUCTIONS });
+  const server = new McpServer(SERVER_INFO, { instructions: SERVER_INSTRUCTIONS });
   const pick = (args: { click?: unknown } | undefined): Selected =>
     selectClick(identity, typeof args?.click === "string" ? args.click : null);
   const hubFor = (props: Selected) => getHub(env, props.clickId);
@@ -353,12 +353,21 @@ export async function mcpResponse(request: Request, env: Env, ctx: ExecutionCont
   const hostname = new URL(request.url).hostname;
   const allowedHostnames = ["clickmcp.com", "localhost", "127.0.0.1", "::1"];
   if (hostname.endsWith(".workers.dev")) allowedHostnames.push(hostname);
-  const handler = createMcpHandler(() => buildServer(env, ctx, identity), {
+  // 2026-07-28 (MCP 2.0) requests are served from the low-level Server. The SDK picks the
+  // instance with an instanceof check that fails when the bundle holds two copies of McpServer
+  // (it does under vitest), which turned every modern request into a 500. The Server is what
+  // the SDK uses in either case, so handing it over directly is the same thing, minus the check.
+  const handler = createMcpHandler((context?: { era?: string }) => {
+    const built = buildServer(env, ctx, identity);
+    return context?.era === "modern" ? built.server : built;
+  }, {
     allowedHostnames,
     allowedOriginHostnames: allowedHostnames,
+    onerror: (error: unknown) => console.error(JSON.stringify({ message: "mcp_handler_error", error: error instanceof Error ? error.message : "error" })),
   });
-  // The SDK has no events/* routing, so MCP Events requests are answered here, and
-  // initialize gains capabilities.events. Everything else goes to the SDK unchanged.
+  // The SDK has no events/* routing, so MCP Events requests are answered here (with the
+  // 2026-07-28 result envelope when the client speaks it), and initialize and server/discover
+  // gain capabilities.events. Everything else goes to the SDK unchanged.
   let method: unknown;
   type RpcMessage = { id?: string | number | null; method: string; params?: unknown };
   let message: RpcMessage | null = null;
@@ -375,7 +384,8 @@ export async function mcpResponse(request: Request, env: Env, ctx: ExecutionCont
   }
   if (message && isEventsMethod(method) && hostAllowed(request, allowedHostnames)) {
     if (message.id === undefined) return new Response(null, { status: 202 });
-    return Response.json(await handleEventsRpc(env, identity, message));
+    const reply = await handleEventsRpc(env, identity, message);
+    return Response.json(isModernRequest(request, message.params) ? modernResult(reply) : reply);
   }
   // tools/list is the same for every identity: serve it from this isolate's copy after the
   // first build instead of converting ~45 schemas on every call.
@@ -387,7 +397,9 @@ export async function mcpResponse(request: Request, env: Env, ctx: ExecutionCont
     if (cached) return cached(message.id ?? null);
   }
   const response = await handler(request, env, ctx);
-  if (method === "initialize" && response.ok) return withEventsCapability(response);
+  // ChatGPT discovers events from capabilities.events: on initialize (2025 protocols) or on
+  // server/discover (2026-07-28, MCP 2.0). The SDK builds both without it, so add it to both.
+  if ((method === "initialize" || method === "server/discover") && response.ok) return withEventsCapability(response);
   if (toolsKey && response.status === 200) await rememberToolsList(toolsKey, response.clone());
   return response;
 }
