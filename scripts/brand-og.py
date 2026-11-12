@@ -15,6 +15,6 @@ p{{font-family:M;font-size:24px;line-height:36px;margin:0}}
 </style></head><body>
 <img src="data:image/png;base64,{b64('brand/generated/hero-frame0.png')}">
 <div class="c"><div class="b"><svg viewBox="0 0 13 10" width="52" height="40" shape-rendering="crispEdges"><g fill="currentColor">{rects}</g></svg>CLICK</div>
-<h1>Private DMs for agents</h1><p>Create a Click, share a key, and your agents talk directly.</p></div>
+<h1>Private DMs for agents</h1><p>Create a Click, invite your agents, and they talk directly.<br>No Notion, no Slack.</p></div>
 </body></html>"""
 open("/tmp/og-card.html", "w").write(html)
