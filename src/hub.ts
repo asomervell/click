@@ -12,6 +12,7 @@ import {
   requireWebhookKey,
 } from "./validate";
 import { postDoorbell, retryDelayMs, type WakeOutcome } from "./webhook";
+import { eventBody, eventRetryDelayMs, type EventOutcome, postEvent } from "./events";
 
 type AgentRow = {
   id: string;
@@ -155,6 +156,60 @@ export class ClickHub extends DurableObject<Env> {
     this.addColumn("invites", "expires_at", "INTEGER");
     this.addColumn("invites", "revoked_at", "INTEGER");
     this.addColumn("events", "reply_to", "TEXT");
+    this.ctx.storage.sql.exec(`
+      CREATE TABLE IF NOT EXISTS event_subs (
+        id TEXT NOT NULL,
+        agent_id TEXT NOT NULL,
+        url TEXT NOT NULL,
+        secret TEXT NOT NULL,
+        expires_at INTEGER NOT NULL,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL,
+        PRIMARY KEY (id, agent_id)
+      );
+      CREATE TABLE IF NOT EXISTS event_deliveries (
+        id TEXT PRIMARY KEY,
+        sub_id TEXT NOT NULL,
+        agent_id TEXT NOT NULL,
+        body TEXT NOT NULL,
+        status TEXT NOT NULL,
+        attempts INTEGER NOT NULL DEFAULT 0,
+        next_at INTEGER,
+        locked_until INTEGER,
+        last_error TEXT,
+        created_at INTEGER NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS event_deliveries_due ON event_deliveries (status, next_at);
+    `);
+  }
+
+  /** Store or refresh an MCP Events subscription for this agent. */
+  async eventSubscribe(props: ClickProps, input: { id: string; url: string; secret: string; expiresAt: number }): Promise<void> {
+    this.noteClick(props.clickId);
+    const agent = this.requireAgent(props.principalId);
+    const now = Date.now();
+    this.ctx.storage.sql.exec(
+      `INSERT INTO event_subs (id, agent_id, url, secret, expires_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT (id, agent_id) DO UPDATE SET url = excluded.url, secret = excluded.secret, expires_at = excluded.expires_at, updated_at = excluded.updated_at`,
+      input.id, agent.id, input.url, input.secret, input.expiresAt, now, now,
+    );
+  }
+
+  async eventUnsubscribe(props: ClickProps, id: string): Promise<void> {
+    const agent = this.agentByPrincipal(props.principalId);
+    if (!agent) return;
+    this.ctx.storage.transactionSync(() => {
+      this.ctx.storage.sql.exec(`DELETE FROM event_subs WHERE id = ? AND agent_id = ?`, id, agent.id);
+      this.ctx.storage.sql.exec(`DELETE FROM event_deliveries WHERE sub_id = ? AND agent_id = ? AND status IN ('queued', 'inflight')`, id, agent.id);
+    });
+  }
+
+  /** Active subscriptions for this agent, for whoami and tests. Secrets are never returned. */
+  async eventSubscriptions(props: ClickProps): Promise<Array<{ id: string; url: string; expires_at: number }>> {
+    const agent = this.requireAgent(props.principalId);
+    return this.ctx.storage.sql
+      .exec<{ id: string; url: string; expires_at: number }>(`SELECT id, url, expires_at FROM event_subs WHERE agent_id = ? AND expires_at > ?`, agent.id, Date.now())
+      .toArray();
   }
 
   private addColumn(table: string, column: string, type: string): void {
@@ -166,6 +221,50 @@ export class ClickHub extends DurableObject<Env> {
   }
 
   private knownClickId: string | null = null;
+
+  /** Agents blocked in wait_for_message, by agent id. Woken on send. */
+  private waiters = new Map<string, Set<() => void>>();
+
+  /**
+   * Wait up to ms for an unread message for this agent. Returns at once when one is already
+   * waiting. Resolves true when something arrived, false on timeout.
+   */
+  async waitForMessage(props: ClickProps, ms: number): Promise<boolean> {
+    const agent = this.requireAgent(props.principalId);
+    if (this.unreadFor(agent.id) > 0) return true;
+    const limit = Math.max(0, Math.min(ms, 50_000));
+    if (limit === 0) return false;
+    return new Promise<boolean>((resolve) => {
+      const set = this.waiters.get(agent.id) ?? new Set<() => void>();
+      this.waiters.set(agent.id, set);
+      let done = false;
+      const finish = (arrived: boolean) => {
+        if (done) return;
+        done = true;
+        clearTimeout(timer);
+        set.delete(wake);
+        if (set.size === 0) this.waiters.delete(agent.id);
+        resolve(arrived);
+      };
+      const wake = () => finish(true);
+      const timer = setTimeout(() => finish(false), limit);
+      set.add(wake);
+    });
+  }
+
+  private unreadFor(agentId: string): number {
+    return this.ctx.storage.sql
+      .exec<{ n: number }>(`SELECT COUNT(*) AS n FROM deliveries WHERE agent_id = ? AND acked_at IS NULL`, agentId)
+      .one().n;
+  }
+
+  private wakeWaiters(agentIds: string[]): void {
+    for (const id of agentIds) {
+      const set = this.waiters.get(id);
+      if (!set) continue;
+      for (const wake of [...set]) wake();
+    }
+  }
 
   /** Remember which click this object serves, so alarms can label doorbells. Legacy hubs learn it lazily. */
   private noteClick(clickId: string): void {
@@ -478,6 +577,7 @@ export class ClickHub extends DurableObject<Env> {
         .toArray();
     }
 
+    const deliveryIds = new Map<string, string>();
     this.ctx.storage.transactionSync(() => {
       this.ctx.storage.sql.exec(
         `INSERT INTO events (id, kind, topic, from_agent_id, to_agent_id, text, created_at, reply_to) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
@@ -492,10 +592,12 @@ export class ClickHub extends DurableObject<Env> {
       );
       for (const recipient of recipients) {
         const wake = Boolean(recipient.webhook_url && recipient.webhook_key);
+        const deliveryId = crypto.randomUUID();
+        deliveryIds.set(recipient.id, deliveryId);
         this.ctx.storage.sql.exec(
           `INSERT INTO deliveries (id, event_id, agent_id, created_at, wake_status, wake_attempts, wake_next_at)
            VALUES (?, ?, ?, ?, ?, 0, ?)`,
-          crypto.randomUUID(),
+          deliveryId,
           eventId,
           recipient.id,
           now,
@@ -504,6 +606,8 @@ export class ClickHub extends DurableObject<Env> {
         );
       }
     });
+    this.wakeWaiters(recipients.map((agent) => agent.id));
+    this.queueEvents(recipients, deliveryIds, { from: from.handle, kind, topic, text, replyTo, createdAt: now, clickId: props.clickId });
     await this.scheduleAlarm();
     return { event_id: eventId, kind, recipients: recipients.map((agent) => agent.handle) };
   }
@@ -1052,6 +1156,94 @@ export class ClickHub extends DurableObject<Env> {
     };
   }
 
+  private queueEvents(
+    recipients: AgentRow[],
+    deliveryIds: Map<string, string>,
+    message: { from: string; kind: string; topic: string | null; text: string; replyTo: string | null; createdAt: number; clickId: string },
+  ): void {
+    if (recipients.length === 0) return;
+    const now = Date.now();
+    const subs = this.ctx.storage.sql
+      .exec<{ id: string; agent_id: string }>(`SELECT id, agent_id FROM event_subs WHERE expires_at > ?`, now)
+      .toArray()
+      .filter((sub) => deliveryIds.has(sub.agent_id));
+    if (subs.length === 0) return;
+    const click = this.clickLabel();
+    const byId = new Map(recipients.map((agent) => [agent.id, agent]));
+    this.ctx.storage.transactionSync(() => {
+      for (const sub of subs) {
+        const eventId = `evt_${crypto.randomUUID().replaceAll("-", "")}`;
+        const body = eventBody({
+          eventId,
+          click: click.id ?? message.clickId,
+          clickName: click.name,
+          messageId: deliveryIds.get(sub.agent_id)!,
+          from: message.from,
+          to: byId.get(sub.agent_id)?.handle ?? "",
+          kind: message.kind,
+          topic: message.topic,
+          text: message.text,
+          replyTo: message.replyTo,
+          createdAt: message.createdAt,
+        });
+        this.ctx.storage.sql.exec(
+          `INSERT INTO event_deliveries (id, sub_id, agent_id, body, status, attempts, next_at, created_at) VALUES (?, ?, ?, ?, 'queued', 0, ?, ?)`,
+          eventId, sub.id, sub.agent_id, body, now, now,
+        );
+      }
+    });
+  }
+
+  private claimEvents(dueAt: number): Array<{ id: string; attempts: number; subId: string; agentId: string; url: string; secret: string; body: string }> {
+    return this.ctx.storage.transactionSync(() => {
+      const rows = this.ctx.storage.sql
+        .exec<{ id: string; attempts: number; sub_id: string; agent_id: string; url: string; secret: string; body: string }>(
+          `SELECT d.id, d.attempts, d.sub_id, d.agent_id, s.url, s.secret, d.body
+           FROM event_deliveries d JOIN event_subs s ON s.id = d.sub_id AND s.agent_id = d.agent_id
+           WHERE s.expires_at > ? AND ((d.status = 'queued' AND d.next_at <= ?) OR (d.status = 'inflight' AND d.locked_until <= ?))
+           ORDER BY d.created_at LIMIT 20`,
+          Date.now(), dueAt, dueAt,
+        )
+        .toArray();
+      const now = Date.now();
+      for (const row of rows) {
+        this.ctx.storage.sql.exec(
+          `UPDATE event_deliveries SET status = 'inflight', attempts = ?, locked_until = ?, next_at = NULL WHERE id = ?`,
+          row.attempts + 1, now + LOCK_MS, row.id,
+        );
+      }
+      return rows.map((row) => ({ id: row.id, attempts: row.attempts + 1, subId: row.sub_id, agentId: row.agent_id, url: row.url, secret: row.secret, body: row.body }));
+    });
+  }
+
+  private recordEvent(job: { id: string; attempts: number; subId: string; agentId: string }, outcome: EventOutcome): "delivered" | "retrying" | "failed" {
+    const sql = this.ctx.storage.sql;
+    if (outcome.ok) {
+      sql.exec(`UPDATE event_deliveries SET status = 'delivered', locked_until = NULL, last_error = NULL WHERE id = ?`, job.id);
+      return "delivered";
+    }
+    if (outcome.final === "gone") {
+      // 410: the receiver dropped the subscription. Stop it here too.
+      sql.exec(`DELETE FROM event_subs WHERE id = ? AND agent_id = ?`, job.subId, job.agentId);
+      sql.exec(`UPDATE event_deliveries SET status = 'failed', locked_until = NULL, last_error = ? WHERE sub_id = ? AND agent_id = ? AND status IN ('queued', 'inflight')`, outcome.error, job.subId, job.agentId);
+      return "failed";
+    }
+    const delay = outcome.final ? null : eventRetryDelayMs(job.attempts);
+    if (delay == null) {
+      sql.exec(`UPDATE event_deliveries SET status = 'failed', locked_until = NULL, last_error = ? WHERE id = ?`, outcome.error, job.id);
+      return "failed";
+    }
+    sql.exec(`UPDATE event_deliveries SET status = 'queued', locked_until = NULL, next_at = ?, last_error = ? WHERE id = ?`, Date.now() + delay, outcome.error, job.id);
+    return "retrying";
+  }
+
+  /** Event delivery state for tests and operators: no bodies or secrets. */
+  async eventDeliveryStates(): Promise<Array<{ id: string; status: string; attempts: number; last_error: string | null }>> {
+    return this.ctx.storage.sql
+      .exec<{ id: string; status: string; attempts: number; last_error: string | null }>(`SELECT id, status, attempts, last_error FROM event_deliveries ORDER BY created_at`)
+      .toArray();
+  }
+
   async processWakes(dueAt = Date.now(), clickId?: string): Promise<WakeSummary> {
     if (clickId) this.noteClick(clickId);
     const click = this.clickLabel();
@@ -1061,9 +1253,18 @@ export class ClickHub extends DurableObject<Env> {
       if (jobs.length === 0) break;
       for (const job of jobs) {
         summary.attempted += 1;
-        const outcome = await postDoorbell({ ...job, clickId: click.id, clickName: click.name });
+        const outcome = await postDoorbell({ ...job, deliveryId: job.id, clickId: click.id, clickName: click.name });
         const state = this.recordWake(job.id, job.attempts, outcome, Date.now());
         summary[state] += 1;
+      }
+    }
+    for (let batch = 0; batch < 5; batch++) {
+      const jobs = this.claimEvents(dueAt);
+      if (jobs.length === 0) break;
+      for (const job of jobs) {
+        summary.attempted += 1;
+        const outcome = await postEvent({ url: job.url, secret: job.secret, eventId: job.id, subId: job.subId, body: job.body });
+        summary[this.recordEvent(job, outcome)] += 1;
       }
     }
     await this.scheduleAlarm();
@@ -1159,6 +1360,10 @@ export class ClickHub extends DurableObject<Env> {
            SELECT wake_next_at AS t FROM deliveries WHERE wake_status = 'queued' AND wake_next_at IS NOT NULL
            UNION ALL
            SELECT wake_locked_until AS t FROM deliveries WHERE wake_status = 'inflight' AND wake_locked_until IS NOT NULL
+           UNION ALL
+           SELECT next_at AS t FROM event_deliveries WHERE status = 'queued' AND next_at IS NOT NULL
+           UNION ALL
+           SELECT locked_until AS t FROM event_deliveries WHERE status = 'inflight' AND locked_until IS NOT NULL
          )`,
       )
       .toArray()[0];
@@ -1249,6 +1454,8 @@ export class ClickHub extends DurableObject<Env> {
       this.ctx.storage.sql.exec(`DELETE FROM subscriptions WHERE agent_id = ?`, agentId);
       this.ctx.storage.sql.exec(`DELETE FROM api_tokens WHERE principal_id = ?`, principalId);
       this.ctx.storage.sql.exec(`DELETE FROM agents WHERE id = ?`, agentId);
+      this.ctx.storage.sql.exec(`DELETE FROM event_subs WHERE agent_id = ?`, agentId);
+      this.ctx.storage.sql.exec(`DELETE FROM event_deliveries WHERE agent_id = ?`, agentId);
     });
   }
 

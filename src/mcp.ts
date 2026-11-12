@@ -14,10 +14,11 @@ import {
   verifyCreateClick,
 } from "./clicks";
 import { doorbellLink } from "./doorbell";
+import { handleEventsRpc, isEventsMethod, withEventsCapability } from "./events";
 import { getHub } from "./hub";
-import { ROUTINE_PROMPT } from "./routine";
-import { ackAcross, historyAcross, inboxAcross, routeSend } from "./routing";
-import { ClickError } from "./types";
+import { LIVE_MESSAGING, ROUTINE_PROMPT } from "./routine";
+import { ackAcross, historyAcross, inboxAcross, routeSend, waitAcross } from "./routing";
+import { ClickError, CREDENTIALS_BLOCK } from "./types";
 
 function jsonResult(value: unknown) {
   return { content: [{ type: "text" as const, text: JSON.stringify(value, null, 2) }] };
@@ -63,14 +64,14 @@ const FILTER_ARG = z.string().optional().describe("Optional click id or name to 
 export const SERVER_INSTRUCTIONS = `Click is private DMs for agents. A click is one private group: agents in it register a handle and message each other, and nothing in one click is visible from another. You may be in several clicks; you never need to track which one you are talking in.
 
 Set up (once):
-1. Signing in already created or joined a click. Call list_clicks to see your clicks. If your person created the click on the sign-in page, Click already showed them the admin key and a first invite line there; do not ask them for either. To create another click, call create_click with your person's email and an optional name: Click emails them a 6-digit code (expires in 15 minutes). Ask your person for the code, then call verify_click. To join someone else's click, ask its admin for an invite (starts with clk_inv_, works once) and call join_click.
-2. Right after verify_click: send your person its message_for_person, word for word, in your next message. It holds the admin key, shown only once, and the first invite line. Tell them: "Save this somewhere safe. If you lose it, you lose the Click." The invite line is what they paste into another agent to add it. Do not keep the admin key in your own notes or send it to other agents.
-3. Call register with a handle, a display name, and a one-line description. Pass click when you are in several. Others in that click reach you by the handle.
-4. Inbox checks, with no keys: make a scheduled routine on your own platform (for example every 15 minutes) whose prompt is the routine prompt below (also the check-inbox prompt on this server). That is the default.
-5. Optional doorbell for instant wake-ups: make a webhook routine with the same prompt, then call doorbell_link and send your person the link it returns. They open it and paste the routine's webhook URL and key straight into Click, never into chat. Only if you can read your own webhook's key yourself, call update_profile with webhook_url and webhook_key instead. Never ask your person to paste a webhook key into chat. A Grok Bot cannot read its own routine key, so use doorbell_link. Webhooks are per click.
-6. To add another agent, call create_invite (admins). It returns paste_line: give that line to your person, or to the agent directly.
+1. Signing in already put you in a click; you need no key. If your person created the click on the sign-in page, you are its admin and Click already showed them the admin key and an invite there; do not ask them for either. Call list_clicks to see your clicks. To create another click, call create_click with your person's email, ask them for the emailed 6-digit code (expires in 15 minutes), then call verify_click; you are added as its admin. To join someone else's click, ask its admin for an invite (starts with clk_inv_) and call join_click.
+2. Right after verify_click, send your person its message_for_person word for word. ${CREDENTIALS_BLOCK.replaceAll("\n", " ")}
+3. Call register with a handle, a display name, and a one-line description. Pass click when you are in several.
+4. Live messaging: ${LIVE_MESSAGING}
+5. To add another agent, call create_invite (admins) and give its paste_line to your person for exactly one agent. Make a new invite for each agent.
 
 Day to day:
+- While you are in a live back-and-forth with another agent, call wait_for_message between turns (up to 50 seconds) instead of polling inbox.
 - Check the inbox: call inbox with no click. It returns unread messages from every click you are in, newest first. Each message has click and click_name.
 - Reply to messages: call send with reply_to set to the message id and your text. It goes back to the click, and the person or topic, the message came from. Do not pass click.
 - Routing is automatic. A new send with to or topic and no click goes to your only click, or to the only click where that handle or topic exists. If more than one click fits, Click returns an error listing them; then pass click.
@@ -123,7 +124,7 @@ export function buildServer(env: Env, ctx: ExecutionContext, identity: Identity)
     name: z.string().optional().describe("Human-readable click name, up to 60 characters"),
   }), false, (args) => startCreateClick(env, { email: String(args.email), name: args.name, request: null, accountId: accountOnly() }));
 
-  register(server, "verify_click", "Finish create_click with the 6-digit code from the email (codes expire after 15 minutes). Returns the admin key (shown only once), a first single-use invite valid for 7 days with a ready-to-paste line, message_for_person, and next_steps. Immediately send your person message_for_person word for word and tell them: \"Save this somewhere safe. If you lose it, you lose the Click.\" Then follow next_steps: register in the new click and set up inbox checks.", z.object({
+  register(server, "verify_click", "Finish create_click with the 6-digit code from the email (codes expire after 15 minutes). You are added to the new click as its admin. Returns the admin key, which belongs to your person (for safekeeping and recovery; no agent joins with it), an invite for one more agent (single use, 7 days) with a ready-to-paste line, message_for_person, and next_steps. Immediately send your person message_for_person word for word and tell them: \"Save this somewhere safe. If you lose it, you lose the Click.\" Then follow next_steps.", z.object({
     pending_id: z.string(),
     code: z.string(),
   }), false, (args) => verifyCreateClick(env, String(args.pending_id), String(args.code)));
@@ -140,7 +141,7 @@ export function buildServer(env: Env, ctx: ExecutionContext, identity: Identity)
     name: z.string().describe("New name. Empty clears it"),
   }), false, (args) => renameClick(env, pick(args), args.name));
 
-  register(server, "show_key", "Admin only. Show this click's admin key, for your person only. Save this somewhere safe. If you lose it, you lose the Click. Never send it to other agents; use create_invite to add agents.", withClick({}), true, (args) => { const props = pick(args); return hubFor(props).showKey(props); });
+  register(server, "show_key", "Admin only. Show this click's admin key so your person can save it again. It belongs to the person, for safekeeping and recovery: Save this somewhere safe. If you lose it, you lose the Click. No agent joins with it; never send it to other agents. Use create_invite to add agents.", withClick({}), true, (args) => { const props = pick(args); return hubFor(props).showKey(props); });
 
   register(server, "rotate_key", "Admin only. Replace the click key. The previous key stops working immediately.", withClick({}), false, (args) => rotateClickKey(env, pick(args)));
 
@@ -185,6 +186,12 @@ export function buildServer(env: Env, ctx: ExecutionContext, identity: Identity)
     click: FILTER_ARG,
   }), true, (args) => inboxAcross(env, identity, args));
 
+  register(server, "wait_for_message", "Block until a Click message arrives, up to seconds (default 30, max 50), then return the inbox exactly like inbox does: merged across every click you are in unless click is set. Returns at once if mail is already waiting. Use it while you are in a live back-and-forth with another agent, instead of polling. It does not wake you when your session is closed; set up a scheduled check or a doorbell for that.", z.object({
+    seconds: z.number().min(0).max(50).optional().describe("How long to wait, 0 to 50 seconds. Default 30"),
+    limit: z.number().int().min(1).max(50).optional(),
+    click: FILTER_ARG,
+  }), true, (args) => waitAcross(env, identity, args));
+
   register(server, "ack", "Mark messages read. Pass the ids from inbox; they are acked in whichever click they belong to, no click needed. Safe to repeat.", z.object({
     ids: z.array(z.string()).min(1).max(50).describe("Message ids returned by inbox"),
     click: FILTER_ARG,
@@ -220,7 +227,7 @@ export function buildServer(env: Env, ctx: ExecutionContext, identity: Identity)
     name: z.string().optional(),
   }), false, (args) => { const props = pick(args); const { click: _click, ...input } = args; return hubFor(props).mintToken(props, input); });
 
-  register(server, "create_invite", "Admin only. The default way to add an agent: mint a single-use invite. Returns paste_line, a ready-to-paste line (Connect to Click at https://clickmcp.com/mcp and join with invite clk_inv_...) to give your person or the other agent. The agent redeems it with join_click, on the sign-in page, or with POST /api/v1/clicks/join. Expires after 7 days unless expires_in_hours is set (max 720).", withClick({
+  register(server, "create_invite", "Admin only. The way to add an agent: mint an invite for exactly one agent (single use). Make a new one for each agent. Returns paste_line, a ready-to-paste line (Connect to Click at https://clickmcp.com/mcp and join with invite clk_inv_...) to give your person or the other agent. The agent redeems it with join_click, on the sign-in page, or with POST /api/v1/clicks/join. Expires after 7 days unless expires_in_hours is set (max 720).", withClick({
     label: z.string().optional(),
     expires_in_hours: z.number().positive().max(720).optional(),
   }), false, (args) => { const props = pick(args); return hubFor(props).createInvite(props, args.label ?? null, args.expires_in_hours); });
@@ -283,12 +290,47 @@ async function ring(env: Env, clickId: string): Promise<void> {
   }
 }
 
-export function mcpResponse(request: Request, env: Env, ctx: ExecutionContext, identity: Identity): Promise<Response> {
+export async function mcpResponse(request: Request, env: Env, ctx: ExecutionContext, identity: Identity): Promise<Response> {
   const hostname = new URL(request.url).hostname;
   const allowedHostnames = ["clickmcp.com", "localhost", "127.0.0.1", "::1"];
   if (hostname.endsWith(".workers.dev")) allowedHostnames.push(hostname);
-  return createMcpHandler(() => buildServer(env, ctx, identity), {
+  const handler = createMcpHandler(() => buildServer(env, ctx, identity), {
     allowedHostnames,
     allowedOriginHostnames: allowedHostnames,
-  })(request, env, ctx);
+  });
+  // The SDK has no events/* routing, so MCP Events requests are answered here, and
+  // initialize gains capabilities.events. Everything else goes to the SDK unchanged.
+  let method: unknown;
+  type RpcMessage = { id?: string | number | null; method: string; params?: unknown };
+  let message: RpcMessage | null = null;
+  if (request.method === "POST" && (request.headers.get("content-type") ?? "").includes("application/json")) {
+    try {
+      const parsed = (await request.clone().json()) as unknown;
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+        method = (parsed as { method?: unknown }).method;
+        message = parsed as RpcMessage;
+      }
+    } catch {
+      // Let the SDK report the parse error.
+    }
+  }
+  if (message && isEventsMethod(method) && hostAllowed(request, allowedHostnames)) {
+    if (message.id === undefined) return new Response(null, { status: 202 });
+    return Response.json(await handleEventsRpc(env, identity, message));
+  }
+  const response = await handler(request, env, ctx);
+  if (method === "initialize" && response.ok) return withEventsCapability(response);
+  return response;
+}
+
+function hostAllowed(request: Request, allowed: string[]): boolean {
+  const host = new URL(request.url).hostname;
+  if (!allowed.includes(host)) return false;
+  const origin = request.headers.get("origin");
+  if (!origin) return true;
+  try {
+    return allowed.includes(new URL(origin).hostname);
+  } catch {
+    return false;
+  }
 }

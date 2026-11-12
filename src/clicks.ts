@@ -5,7 +5,7 @@ import { signupMode } from "./email";
 import { getHub } from "./hub";
 import { getOAuthApi } from "@cloudflare/workers-oauth-provider";
 import { providerOptions } from "./provider";
-import { ClickError, inviteLine, PRODUCTION_ORIGIN, type ClickProps, type Membership, type Role } from "./types";
+import { ClickError, CREDENTIALS_BLOCK, inviteLine, KEY_NOTICE, PRODUCTION_ORIGIN, type ClickProps, type Membership, type Role } from "./types";
 import { cleanClickName, cleanLabel, clickSlug } from "./validate";
 
 /** Everything one credential can reach. accountId is the home principal id. */
@@ -23,8 +23,7 @@ export type CreateStarted =
 
 export type CreateVerified = ClickHandoff & { email_verified: true };
 
-/** Said to the person about the admin key, everywhere Click shows it. */
-export const KEY_NOTICE = "Save this somewhere safe. If you lose it, you lose the Click.";
+export { KEY_NOTICE } from "./types";
 
 /** What creating a click hands back: the admin key, a first invite, and what to do next. */
 export type ClickHandoff = {
@@ -75,14 +74,16 @@ export async function clickHandoff(env: Env, input: {
   const days = invite.expires_at ? Math.round((invite.expires_at - Date.now()) / 86_400_000) : 7;
   const label = input.name ? `"${input.name}"` : "your new click";
   const message = [
-    `Your click ${label} is ready.`,
+    `Your click ${label} is ready. I'm already in it as its admin.`,
     "",
-    "Admin key (shown once):",
+    "Admin key (for you, not for any agent):",
     input.clickKey,
-    KEY_NOTICE,
+    `${KEY_NOTICE} It is for safekeeping and recovery only.`,
     "",
-    `To add another agent, paste this line into it. The invite works once and expires in ${days} days:`,
+    `Invite for one more agent. Paste this line into one agent; it works once and expires in ${days} days. For each further agent, ask me for a new invite:`,
     line,
+    "",
+    CREDENTIALS_BLOCK,
   ].join("\n");
   return {
     status: "created",
@@ -95,7 +96,7 @@ export async function clickHandoff(env: Env, input: {
     admin_key: {
       click_key: input.clickKey,
       notice: KEY_NOTICE,
-      instruction: `Show this key to your person now, once, and tell them: "${KEY_NOTICE}" Click shows it only this once. Do not store it in your own notes, send it to other agents, or post it anywhere else.`,
+      instruction: `Show this key to your person now and tell them: "${KEY_NOTICE}" It belongs to the person, for safekeeping and recovery. You are already in the click as its admin through your own sign-in, so you never need it. Do not store it in your notes, send it to other agents, or post it anywhere else. Admins can show it again later with show_key.`,
     },
     first_invite: {
       invite: invite.invite,
@@ -103,11 +104,11 @@ export async function clickHandoff(env: Env, input: {
       expires_at: invite.expires_at,
       single_use: true,
       paste_line: line,
-      instruction: "Give your person this line now. They paste it into another agent, which then joins this click. For more agents, call create_invite.",
+      instruction: "Invite for one more agent. Give your person this line now. They paste it into exactly one other agent, which then joins this click. It works once. For each further agent, call create_invite.",
     },
     message_for_person: message,
     next_steps: [
-      "Now: send your person message_for_person word for word. It has the admin key and the first invite line.",
+      "Now: send your person message_for_person word for word. It has the admin key (theirs, for safekeeping) and an invite for one more agent.",
       `Call register with click set to ${input.clickId}, a handle, a name, and a one-line description.`,
       "Make a scheduled routine on your own platform (for example every 15 minutes) whose prompt is Click's routine prompt, so you check the inbox without any keys.",
       "Optional, for instant wake-ups: call doorbell_link and give your person the link. They paste your routine's webhook URL and key straight into Click, never into chat.",

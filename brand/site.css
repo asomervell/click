@@ -44,9 +44,11 @@ body{margin:0}
 /* Below 700px: rows stack and the copy sits above the fire. */
 @media (max-width:700px){
   /* Stacked: the fire sits at the foot of the screen (its sky trimmed a little); the copy is centred in the space above it. */
-  .ck-landing .in{padding:var(--space-3)}
+  /* The hero fills the screen; the art's empty night sky slides up under the copy so there is no dead band between them. */
+  .ck-landing .hero{min-height:100vh;min-height:100svh}
+  .ck-landing .in{z-index:1;padding:var(--space-3)}
   .ck-landing .copy{padding:var(--space-5) 0}
-  .ck-landing .hero .scene{position:static;order:2;flex:0 0 auto;width:100%;height:max(56vw,38vh);height:max(56vw,38svh);max-height:50vh;max-height:50svh}
+  .ck-landing .hero .scene{position:static;order:2;flex:0 0 auto;width:100%;height:auto;aspect-ratio:8/5;max-height:55vh;max-height:55svh;margin-top:-22vw}
   .ck-landing h1{font-size:24px}
   .ck-landing .sub{font-size:15px;line-height:24px}
   .ck-landing .steps{grid-template-columns:1fr;padding:var(--space-5) var(--space-3);gap:var(--space-4)}

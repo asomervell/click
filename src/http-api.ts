@@ -17,7 +17,7 @@ import { ownerKeyMatches } from "./crypto";
 import { getDirectory } from "./directory";
 import { doorbellLink } from "./doorbell";
 import { getHub } from "./hub";
-import { ackAcross, historyAcross, inboxAcross, routeSend } from "./routing";
+import { ackAcross, historyAcross, inboxAcross, routeSend, waitAcross } from "./routing";
 import { ClickError } from "./types";
 import { cleanLabel } from "./validate";
 
@@ -156,6 +156,9 @@ async function dispatch(
     const result = await target.send(routed.props, routed.send);
     ctx.waitUntil(target.processWakes(Date.now(), routed.props.clickId).catch(() => undefined));
     return { ...result, click: routed.props.clickId, click_name: routed.props.clickName };
+  }
+  if (request.method === "GET" && path === "/api/inbox" && url.searchParams.has("wait")) {
+    return waitAcross(env, identity, { click: chosen, seconds: Number(url.searchParams.get("wait")), limit: numberParam(url, "limit") });
   }
   if (request.method === "GET" && path === "/api/inbox") {
     return inboxAcross(env, identity, { click: chosen, limit: numberParam(url, "limit"), cursor: url.searchParams.get("cursor") });

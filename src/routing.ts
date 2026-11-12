@@ -46,6 +46,10 @@ function explicit(click: string | null | undefined): string | null {
 }
 
 /** Memberships where this identity has a registered agent. */
+export async function registeredMemberships(env: Env, identity: Identity): Promise<Selected[]> {
+  return registered(env, identity);
+}
+
 async function registered(env: Env, identity: Identity): Promise<Selected[]> {
   const all = identity.memberships.map(propsOf);
   const flags = await Promise.all(all.map((props) => getHub(env, props.clickId).isRegistered(props).catch(() => false)));
@@ -266,4 +270,27 @@ export async function routeSend(env: Env, identity: Identity, input: SendRequest
     throw new ClickError(`None of your clicks has ${what}. Your clicks: ${list(all)}.`);
   }
   throw new ClickError(`Ambiguous: ${candidates.length} of your clicks have ${what}: ${list(candidates)}. Pass click with a click id or name, or use reply_to to answer a message.`);
+}
+
+/**
+ * Block up to seconds (max 50) until an unread message lands in any registered click, then
+ * return the inbox exactly as inboxAcross would. Returns at once when mail is already waiting.
+ */
+export async function waitAcross(env: Env, identity: Identity, input: { click?: string | null; seconds?: number; limit?: number }): Promise<{
+  click?: string;
+  click_name?: string | null;
+  messages: unknown[];
+  next_cursor: string | null;
+  waited_ms: number;
+  timed_out: boolean;
+}> {
+  const raw = input.seconds == null || !Number.isFinite(input.seconds) ? 30 : input.seconds;
+  const ms = Math.round(Math.max(0, Math.min(raw, 50)) * 1000);
+  const chosen = explicit(input.click);
+  const targets = chosen ? [selectClick(identity, chosen)] : await registered(env, identity);
+  if (targets.length === 0) throw new ClickError("Register an agent before using the mailbox.");
+  const started = Date.now();
+  const arrived = await Promise.race(targets.map((props) => getHub(env, props.clickId).waitForMessage(props, ms)));
+  const inbox = await inboxAcross(env, identity, { click: chosen, limit: input.limit });
+  return { ...inbox, waited_ms: Date.now() - started, timed_out: !arrived && inbox.messages.length === 0 };
 }
