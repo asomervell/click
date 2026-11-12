@@ -1,4 +1,4 @@
-import { brandAsset, brandHead, brandNav } from "./brand";
+import { brandHead, brandNav } from "./brand";
 import { sha256Hex } from "./crypto";
 import { escapeHtml } from "./pages";
 import { LIVE_MESSAGING, MCP_EVENTS_ENABLED, ONBOARD_LINE, ONBOARD_PROMPT, ROUTINE_PROMPT } from "./routine";
@@ -76,35 +76,49 @@ ${events}
 Doorbells carry \`Authorization: Bearer <key>\`, Click's own \`X-Click-Signature\`, and Standard Webhooks headers (\`webhook-id\`, \`webhook-timestamp\`, \`webhook-signature\`). The body has a \`text\` field for receivers that only read text.`;
 }
 
+/**
+ * The public pages and documents are pure functions of the origin, so each isolate builds
+ * them once. Bounded, since the origin comes from the request.
+ */
+const built = new Map<string, unknown>();
+function memo<T>(name: string, origin: string, build: () => T): T {
+  const key = `${name} ${origin}`;
+  if (built.has(key)) return built.get(key) as T;
+  const value = build();
+  if (built.size >= 200) built.clear();
+  built.set(key, value);
+  return value;
+}
+
 export async function handleSite(request: Request): Promise<Response | null> {
   const url = new URL(request.url);
   const origin = url.origin;
   const path = url.pathname;
   if (request.method !== "GET" && request.method !== "HEAD") return null;
-  const asset = brandAsset(url);
-  if (asset) return asset;
 
-  if (path === "/") return pageResponse(request, origin, homeHtml(origin), homeMarkdown(origin));
-  if (path === "/docs" || path === "/docs.md") return pageResponse(request, origin, docsHtml(origin), docsMarkdown(origin), path.endsWith(".md"));
-  if (path === "/about") return pageResponse(request, origin, simpleHtml("About Click", aboutText()), aboutText());
-  if (path === "/contact") return pageResponse(request, origin, simpleHtml("Contact Click", contactText()), contactText());
-  if (path === "/privacy") return pageResponse(request, origin, simpleHtml("Click privacy", privacyText()), privacyText());
-  if (path === "/auth.md") return markdown(authMarkdown(origin));
-  if (path === "/pricing.md") return markdown(pricingMarkdown());
-  if (path === "/llms.txt") return markdown(llmsTxt(origin));
-  if (path === "/llms-full.txt") return markdown(llmsFull(origin));
-  if (path === "/robots.txt") return text(robotsTxt(origin));
-  if (path === "/sitemap.xml") return xml(sitemapXml(origin));
-  if (path === "/openapi.json") return json(openApi(origin), "application/openapi+json");
-  if (path === "/.well-known/api-catalog") return json(apiCatalog(origin), "application/linkset+json");
-  if (path === "/.well-known/mcp/server-card.json" || path === "/mcp/server-card") return json(mcpCard(origin));
-  if (path === "/.well-known/agent-card.json") return json(agentCard(origin));
-  if (path === "/.well-known/agent-skills/index.json") return json(await skillsIndex(origin));
+  if (path === "/") return pageResponse(request, origin, memo("homeHtml", origin, () => homeHtml(origin)), memo("homeMarkdown", origin, () => homeMarkdown(origin)));
+  if (path === "/docs" || path === "/docs.md") return pageResponse(request, origin, memo("docsHtml", origin, () => docsHtml(origin)), memo("docsMarkdown", origin, () => docsMarkdown(origin)), path.endsWith(".md"));
+  if (path === "/about") return pageResponse(request, origin, memo("aboutHtml", origin, () => simpleHtml("About Click", aboutText())), memo("aboutText", origin, () => aboutText()));
+  if (path === "/contact") return pageResponse(request, origin, memo("contactHtml", origin, () => simpleHtml("Contact Click", contactText())), memo("contactText", origin, () => contactText()));
+  if (path === "/privacy") return pageResponse(request, origin, memo("privacyHtml", origin, () => simpleHtml("Click privacy", privacyText())), memo("privacyText", origin, () => privacyText()));
+  if (path === "/auth.md") return markdown(memo("authMarkdown", origin, () => authMarkdown(origin)));
+  if (path === "/pricing.md") return markdown(memo("pricingMarkdown", origin, () => pricingMarkdown()));
+  if (path === "/llms.txt") return markdown(memo("llmsTxt", origin, () => llmsTxt(origin)));
+  if (path === "/llms-full.txt") return markdown(memo("llmsFull", origin, () => llmsFull(origin)));
+  if (path === "/robots.txt") return text(memo("robotsTxt", origin, () => robotsTxt(origin)));
+  if (path === "/sitemap.xml") return xml(memo("sitemapXml", origin, () => sitemapXml(origin)));
+  if (path === "/openapi.json") return json(memo("openApi", origin, () => openApi(origin)), "application/openapi+json");
+  if (path === "/.well-known/api-catalog") return json(memo("apiCatalog", origin, () => apiCatalog(origin)), "application/linkset+json");
+  if (path === "/.well-known/mcp/server-card.json" || path === "/mcp/server-card" || path === "/.well-known/mcp.json" || path === "/mcp.json") return json(memo("mcpCard", origin, () => mcpCard(origin)));
+  if (path === "/index.md") return markdown(memo("homeMarkdown", origin, () => homeMarkdown(origin)));
+  if (path === "/.well-known/llms.txt") return markdown(memo("llmsTxt", origin, () => llmsTxt(origin)));
+  if (path === "/.well-known/agent-card.json") return json(memo("agentCard", origin, () => agentCard(origin)));
+  if (path === "/.well-known/agent-skills/index.json") return json(await memo("skillsIndex", origin, () => skillsIndex(origin)));
   if (path === "/skills/click/SKILL.md") return markdown(SKILL_MD);
   if (path === "/.well-known/ai-catalog.json") {
-    return json(aiCatalog(origin), "application/json", { "access-control-allow-origin": "*" });
+    return json(memo("aiCatalog", origin, () => aiCatalog(origin)), "application/json", { "access-control-allow-origin": "*" });
   }
-  if (path === "/.well-known/poppy.json") return json(poppy(origin));
+  if (path === "/.well-known/poppy.json") return json(memo("poppy", origin, () => poppy(origin)));
   if (path === "/.well-known/oauth-protected-resource") return json(protectedResource(origin));
   return null;
 }

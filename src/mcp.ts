@@ -17,6 +17,8 @@ import { acceptAdd, accountStatus, addMember, approveJoin, claimHandle, declineJ
 import { doorbellLink } from "./doorbell";
 import { handleEventsRpc, isEventsMethod, withEventsCapability } from "./events";
 import { getHub } from "./hub";
+import { forgetIdentities } from "./identity-cache";
+import { nudgeWaiters } from "./wait";
 import { LIVE_MESSAGING, ROUTINE_PROMPT } from "./routine";
 import { ackAcross, historyAcross, inboxAcross, routeSend, waitAcross } from "./routing";
 import { ADDING_AGENTS, ClickError, CREDENTIALS_BLOCK } from "./types";
@@ -46,8 +48,12 @@ function register(
     },
     async (args) => {
       try {
-        return jsonResult(await fn(args));
+        const result = await fn(args);
+        // A tool that writes may have changed memberships (join, leave, remove, rename, create).
+        if (!readOnly) forgetIdentities();
+        return jsonResult(result);
       } catch (error) {
+        if (!readOnly) forgetIdentities();
         const message = error instanceof Error ? error.message : "";
         // Durable Object RPC drops the ClickError class, so the message is the signal.
         const internal = !message || /sql|sqlite|durable object|internal error/i.test(message);
@@ -226,6 +232,7 @@ export function buildServer(env: Env, ctx: ExecutionContext, identity: Identity)
     async (args) => {
       const routed = await routeSend(env, identity, args);
       const result = await hubFor(routed.props).send(routed.props, routed.send);
+      nudgeWaiters(routed.props.clickId);
       ctx.waitUntil(ring(env, routed.props.clickId));
       return { ...result, click: routed.props.clickId, click_name: routed.props.clickName };
     },
@@ -370,9 +377,45 @@ export async function mcpResponse(request: Request, env: Env, ctx: ExecutionCont
     if (message.id === undefined) return new Response(null, { status: 202 });
     return Response.json(await handleEventsRpc(env, identity, message));
   }
+  // tools/list is the same for every identity: serve it from this isolate's copy after the
+  // first build instead of converting ~45 schemas on every call.
+  const toolsKey = message && method === "tools/list" && message.id !== undefined && !hasCursor(message.params) && hostAllowed(request, allowedHostnames)
+    ? `${request.headers.get("accept") ?? ""}|${request.headers.get("mcp-protocol-version") ?? ""}`
+    : null;
+  if (toolsKey && message) {
+    const cached = toolsListCache.get(toolsKey);
+    if (cached) return cached(message.id ?? null);
+  }
   const response = await handler(request, env, ctx);
   if (method === "initialize" && response.ok) return withEventsCapability(response);
+  if (toolsKey && response.status === 200) await rememberToolsList(toolsKey, response.clone());
   return response;
+}
+
+type ToolsListReply = (id: string | number | null) => Response;
+const toolsListCache = new Map<string, ToolsListReply>();
+
+function hasCursor(params: unknown): boolean {
+  return Boolean(params && typeof params === "object" && (params as { cursor?: unknown }).cursor != null);
+}
+
+/** Keep the SDK's exact framing (JSON or one SSE message) and swap only the request id. */
+async function rememberToolsList(key: string, response: Response): Promise<void> {
+  try {
+    const text = await response.text();
+    const sse = (response.headers.get("content-type") ?? "").includes("text/event-stream");
+    const match = sse ? /^data: ?(.*)$/m.exec(text) : null;
+    const raw = sse ? match?.[1] ?? "" : text;
+    const payload = JSON.parse(raw) as { result?: unknown; error?: unknown };
+    if (!payload || payload.error !== undefined || payload.result === undefined) return;
+    const before = sse && match ? text.slice(0, match.index) + "data: " : "";
+    const after = sse && match ? text.slice(match.index + match[0].length) : "";
+    const headers: Array<[string, string]> = [...response.headers.entries()].filter(([name]) => name !== "content-length");
+    if (toolsListCache.size >= 16) toolsListCache.clear();
+    toolsListCache.set(key, (id) => new Response(`${before}${JSON.stringify({ ...payload, id })}${after}`, { status: 200, headers }));
+  } catch {
+    // Not cacheable; the next call builds it again.
+  }
 }
 
 function hostAllowed(request: Request, allowed: string[]): boolean {

@@ -9,7 +9,7 @@ git clone https://github.com/asomervell/click.git
 cd click
 npm install
 npx wrangler login
-npx wrangler deploy
+npm run deploy
 ```
 
 `wrangler login` opens a browser; in CI set `CLOUDFLARE_API_TOKEN` (and `CLOUDFLARE_ACCOUNT_ID`) instead. Before the first deploy, edit `wrangler.jsonc` for your own setup:
@@ -20,7 +20,7 @@ npx wrangler deploy
 
 ## Deploy
 
-`npm run deploy` is the whole deploy. It publishes the Worker, creates the KV namespace and both Durable Object classes, and attaches the custom domain `clickmcp.com` (DNS record and certificate). No dashboard step and no deploy-time secret.
+`npm run deploy` is the whole deploy. It builds `public/` and a code-split bundle in `dist/worker/` (the MCP server and zod load only when `/mcp` is used), then publishes the Worker and its static assets, creates the KV namespace and both Durable Object classes, and attaches the custom domain `clickmcp.com` (DNS record and certificate). No dashboard step and no deploy-time secret.
 
 ```bash
 npm ci
@@ -56,4 +56,4 @@ npm run typecheck
 
 ## Brand
 
-The site follows the brand guide in `brand/` (`BRAND.md`, `HANDOFF.md`, `tokens.css`, `components.css`, `landing.html`). `brand/site.css` holds the page styles, using only tokens. Fonts (Press Start 2P and IBM Plex Mono, SIL OFL) are self-hosted from `brand/fonts/`. After changing anything in `brand/`, run `python3 scripts/brand-images.py` (favicons, email lockup, first hero frame), render `brand/generated/og.png` from `scripts/brand-og.py` with headless Chrome if the card changes, then `node scripts/build-brand.mjs` to regenerate `src/brand-assets.ts`, which the worker serves under `/brand/`, `/favicon.*` and `/og.png`.
+The site follows the brand guide in `brand/` (`BRAND.md`, `HANDOFF.md`, `tokens.css`, `components.css`, `landing.html`). `brand/site.css` holds the page styles, using only tokens. Fonts (Press Start 2P and IBM Plex Mono, SIL OFL) are self-hosted from `brand/fonts/`. After changing anything in `brand/`, run `python3 scripts/brand-images.py` (favicons, email lockup, first hero frame), render `brand/generated/og.png` from `scripts/brand-og.py` with headless Chrome if the card changes, then `node scripts/build-brand.mjs` to regenerate `public/` (served as Workers static assets under `/brand/`, `/favicon.*` and `/og.png`, without running the worker) and `src/brand-version.ts` (the stylesheet's `?v=` hash).

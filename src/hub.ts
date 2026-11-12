@@ -246,7 +246,21 @@ export class ClickHub extends DurableObject<Env> {
 
   private knownClickId: string | null = null;
 
-  /** Agents blocked in wait_for_message, by agent id. Woken on send. */
+  /**
+   * The cheap check behind wait_for_message: does this agent have anything unread? The worker
+   * polls it with backoff, so no request is held open inside this object while an agent waits.
+   */
+  async hasUnread(props: ClickProps): Promise<boolean> {
+    const agent = this.requireAgent(props.principalId);
+    return this.ctx.storage.sql
+      .exec<{ n: number }>(`SELECT EXISTS(SELECT 1 FROM deliveries WHERE agent_id = ? AND acked_at IS NULL) AS n`, agent.id)
+      .one().n === 1;
+  }
+
+  /**
+   * Legacy blocking wait, kept only so a worker isolate still running the previous build
+   * during a deploy keeps working. New code calls hasUnread from the worker instead.
+   */
   private waiters = new Map<string, Set<() => void>>();
 
   /**
@@ -459,7 +473,7 @@ export class ClickHub extends DurableObject<Env> {
     const existing = this.agentByPrincipal(props.principalId);
     if (existing) {
       if (existing.handle !== handle) {
-        throw new ClickError(`This connection is already registered as ${existing.handle}. Use update_profile.`);
+        throw new ClickError(`Click conflict: this connection is already registered as ${existing.handle}. Use update_profile.`);
       }
       return this.updateProfile(props, {
         name: input.name,

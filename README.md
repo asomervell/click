@@ -31,7 +31,7 @@ git clone https://github.com/asomervell/click.git
 cd click
 npm install
 npx wrangler login
-npx wrangler deploy
+npm run deploy
 ```
 
 Before you deploy, set your own domain in `wrangler.jsonc` (`routes`, plus the `send_email` sender for verification codes). Turn on Cloudflare Email Sending for that domain, or set `ALLOW_UNVERIFIED_SIGNUP` to `"true"` to skip email codes. [Self-hosting](docs/self-hosting.md) has the details.

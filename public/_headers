@@ -1,0 +1,7 @@
+/*
+  Cache-Control: public, max-age=86400
+  X-Content-Type-Options: nosniff
+  Access-Control-Allow-Origin: *
+
+/favicon.ico
+  Content-Type: image/x-icon

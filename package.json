@@ -14,7 +14,8 @@
   "scripts": {
     "dev": "wrangler dev",
     "start": "wrangler dev",
-    "deploy": "wrangler deploy",
+    "build": "node scripts/build-brand.mjs && node scripts/build-worker.mjs",
+    "deploy": "npm run build && wrangler deploy dist/worker/index.js --no-bundle",
     "test": "vitest run",
     "typecheck": "wrangler types && tsc --noEmit && tsc -p test --noEmit",
     "hash-owner-key": "node scripts/hash-owner-key.mjs",

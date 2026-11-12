@@ -1,4 +1,6 @@
 import { ONBOARD_PROMPT } from "./routine";
+import { brandStylesheet } from "./brand";
+import { forgetIdentities } from "./identity-cache";
 import { createProvider } from "./provider";
 import { agentAuthMetadata, protectedResource } from "./site";
 import { PRODUCTION_ORIGIN } from "./types";
@@ -62,10 +64,24 @@ function originOf(request: Request): string | null {
   }
 }
 
+const LOOPBACK = new Set(["localhost", "127.0.0.1", "[::1]", "::1"]);
+
+/** Plain http (except loopback, for local dev) is sent to https with a 308, which keeps the method and body. */
+export function httpsRedirect(request: Request): Response | null {
+  const url = new URL(request.url);
+  if (url.protocol !== "http:" || LOOPBACK.has(url.hostname)) return null;
+  url.protocol = "https:";
+  return new Response(null, { status: 308, headers: { location: url.toString(), "cache-control": "public, max-age=3600" } });
+}
+
 export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     const origin = originOf(request);
     if (!origin) return new Response("Bad request", { status: 400 });
+    const secure = httpsRedirect(request);
+    if (secure) return secure;
+    const stylesheet = await brandStylesheet(request, env);
+    if (stylesheet) return stylesheet;
     const path = new URL(request.url).pathname;
     if (path === "/.well-known/oauth-protected-resource") {
       return Response.json(protectedResource(origin));
@@ -73,6 +89,10 @@ export default {
     if (path === "/register" && request.method === "GET") {
       return registerInfo(origin);
     }
+    // Writes outside /mcp (sign-in, joins, the REST API) can change memberships, so this
+    // isolate's identity memo starts and ends them fresh. MCP tools clear it per tool.
+    const writes = request.method !== "GET" && request.method !== "HEAD" && request.method !== "OPTIONS" && path !== "/mcp";
+    if (writes) forgetIdentities();
     try {
       let response = await createProvider(origin).fetch(request, env, ctx);
       if (path === "/.well-known/openid-configuration" && response.status === 404) {
@@ -91,6 +111,8 @@ export default {
         error: error instanceof Error ? error.message : "error",
       }));
       return new Response("Click failed", { status: 500 });
+    } finally {
+      if (writes) forgetIdentities();
     }
   },
   async scheduled(_controller: ScheduledController, env: Env, ctx: ExecutionContext): Promise<void> {

@@ -1,21 +1,15 @@
 import { ownerKeyMatches, sha256Hex } from "./crypto";
 import { randomToken } from "./crypto";
-import { getDirectory, LOBBY, type ResolvedCredential } from "./directory";
+import { getDirectory } from "./directory";
 import { signupMode } from "./email";
 import { getHub } from "./hub";
+import { cachedIdentity, rememberIdentity } from "./identity-cache";
 import { getOAuthApi } from "@cloudflare/workers-oauth-provider";
 import { providerOptions } from "./provider";
-import { ClickError, CREDENTIALS_BLOCK, inviteLine, KEY_NOTICE, PRODUCTION_ORIGIN, type ClickProps, type Membership, type Role } from "./types";
+import { ClickError, CREDENTIALS_BLOCK, inviteLine, KEY_NOTICE, PRODUCTION_ORIGIN, type ClickProps, type Identity, type Membership, type Role } from "./types";
 import { cleanClickName, cleanLabel, clickSlug } from "./validate";
 
-/** Everything one credential can reach. accountId is the home principal id. */
-export type Identity = {
-  accountId: string;
-  operator: boolean;
-  memberships: Membership[];
-  /** True for an agent that signed up on its own (no invite); it may be in no click yet. */
-  standalone?: boolean;
-};
+export type { Identity } from "./types";
 
 export type Selected = ClickProps & { clickName: string | null };
 
@@ -265,41 +259,28 @@ export async function resolveBearer(env: Env, token: string, request: Request): 
   if (await ownerKeyMatches(presented, env.OWNER_KEY_HASH)) {
     const clickId = request.headers.get("x-click-id")?.trim() ?? "";
     if (!clickId) return null;
-    if (!(await getDirectory(env).clickExists(clickId))) return null;
-    return { principalId: "operator", clickId, role: "operator" };
+    const home: ClickProps = { principalId: "operator", clickId, role: "operator" };
+    const identity = await getDirectory(env).identity(home);
+    if (!identity) return null;
+    rememberIdentity(home, identity);
+    return home;
   }
   if (!presented.startsWith("clk_") || presented.startsWith("clk_inv_")) return null;
-  const resolved = await getDirectory(env).resolveKeyHash(await sha256Hex(presented));
+  // One Directory call: the key lookup and everything it can reach.
+  const resolved = await getDirectory(env).resolveIdentity(await sha256Hex(presented));
   if (!resolved) return null;
-  return { principalId: resolved.principalId, clickId: resolved.clickId, role: resolved.role };
+  const home: ClickProps = { principalId: resolved.props.principalId, clickId: resolved.props.clickId, role: resolved.props.role };
+  rememberIdentity(home, resolved.identity);
+  return home;
 }
 
 /** Expand a credential's home props into every live membership. Null when nothing is left. */
 export async function loadIdentity(env: Env, home: ClickProps): Promise<Identity | null> {
-  if (home.role === "operator") {
-    const directory = getDirectory(env);
-    if (!(await directory.clickExists(home.clickId))) return null;
-    return {
-      accountId: "operator",
-      operator: true,
-      memberships: [{
-        accountId: "operator",
-        clickId: home.clickId,
-        principalId: "operator",
-        role: "operator",
-        name: await directory.clickName(home.clickId),
-        home: true,
-      }],
-    };
-  }
-  const directory = getDirectory(env);
-  if (home.clickId === LOBBY) {
-    if (!(await directory.account(home.principalId))) return null;
-    return { accountId: home.principalId, operator: false, memberships: await directory.memberships(home as ResolvedCredential), standalone: true };
-  }
-  const memberships = await directory.memberships(home as ResolvedCredential);
-  if (memberships.length === 0) return null;
-  return { accountId: home.principalId, operator: false, memberships };
+  const cached = cachedIdentity(home);
+  if (cached) return cached;
+  const identity = await getDirectory(env).identity(home);
+  rememberIdentity(home, identity);
+  return identity;
 }
 
 /**
