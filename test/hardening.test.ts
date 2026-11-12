@@ -64,3 +64,26 @@ describe("edge hardening", () => {
     }
   });
 });
+
+describe("per-isolate caches", () => {
+  it("serves tools/list from the cache with the caller's id and the SDK's framing", async () => {
+    const { mcpCall } = await import("./helpers");
+    const click = await createClick();
+    const first = await mcpCall(ORIGIN, click.click_key, "tools/list", {}, 7);
+    const second = await mcpCall(ORIGIN, click.click_key, "tools/list", {}, "abc" as unknown as number);
+    expect(first.id).toBe(7);
+    expect(second.id).toBe("abc");
+    expect(second.result).toEqual(first.result);
+    const names = ((second.result as { tools: Array<{ name: string }> }).tools).map((tool) => tool.name);
+    expect(names).toContain("wait_for_message");
+    expect(names).toContain("send");
+  });
+
+  it("builds the home page once and serves it the same way again", async () => {
+    const a = await (await SELF.fetch(`${ORIGIN}/`)).text();
+    const b = await (await SELF.fetch(`${ORIGIN}/`)).text();
+    expect(b).toBe(a);
+    const md = await SELF.fetch(`${ORIGIN}/`, { headers: { accept: "text/markdown" } });
+    expect(md.headers.get("content-type")).toContain("text/markdown");
+  });
+});

@@ -1,4 +1,4 @@
-import { BRAND_ASSETS, BRAND_VERSION } from "./brand-assets";
+import { BRAND_VERSION } from "./brand-version";
 
 /** The Buckle, inlined so it takes the colour of its parent. 13 by 10 grid, shown at 26 by 20. */
 export const BUCKLE_SVG = `<svg viewBox="0 0 13 10" width="26" height="20" shape-rendering="crispEdges" aria-hidden="true" focusable="false"><g fill="currentColor"><rect x="1" y="0" width="8" height="1"/><rect x="10" y="0" width="2" height="1"/><rect x="0" y="1" width="9" height="1"/><rect x="10" y="1" width="3" height="1"/><rect x="0" y="2" width="4" height="1"/><rect x="10" y="2" width="3" height="1"/><rect x="0" y="3" width="4" height="1"/><rect x="5" y="3" width="8" height="1"/><rect x="0" y="4" width="4" height="1"/><rect x="5" y="4" width="8" height="1"/><rect x="0" y="5" width="4" height="1"/><rect x="5" y="5" width="8" height="1"/><rect x="0" y="6" width="4" height="1"/><rect x="5" y="6" width="8" height="1"/><rect x="0" y="7" width="4" height="1"/><rect x="10" y="7" width="3" height="1"/><rect x="0" y="8" width="9" height="1"/><rect x="10" y="8" width="3" height="1"/><rect x="1" y="9" width="8" height="1"/><rect x="10" y="9" width="2" height="1"/></g></svg>`;
@@ -25,24 +25,19 @@ export function brandNav(links: Array<{ href: string; label: string }> = []): st
   return `<nav class="ck-nav" aria-label="Click"><a class="ck-brand" href="/" aria-label="Click home">${BUCKLE_SVG}<span aria-hidden="true">CLICK</span></a>${right}</nav>`;
 }
 
-const decoded = new Map<string, Uint8Array>();
-
-/** Serves the brand's CSS, fonts, logos, pictures and icons from the worker. */
-export function brandAsset(url: URL): Response | null {
-  const asset = BRAND_ASSETS[url.pathname];
-  if (!asset) return null;
-  let bytes = decoded.get(url.pathname);
-  if (!bytes) {
-    bytes = Uint8Array.from(atob(asset.base64), (char) => char.charCodeAt(0));
-    decoded.set(url.pathname, bytes);
-  }
+/**
+ * Brand files are Workers static assets (public/, built by scripts/build-brand.mjs) and are
+ * served without running the worker. Only the stylesheet runs the worker first, so the
+ * current ?v= version can be cached as immutable.
+ */
+export async function brandStylesheet(request: Request, env: Env): Promise<Response | null> {
+  const url = new URL(request.url);
+  if (url.pathname !== "/brand/click.css" || !env.ASSETS) return null;
+  const asset = await env.ASSETS.fetch(new Request(new URL("/brand/click.css", url.origin), request));
+  if (!asset.ok) return asset;
+  const headers = new Headers(asset.headers);
   const versioned = url.searchParams.get("v") === BRAND_VERSION;
-  return new Response(bytes, {
-    headers: {
-      "content-type": asset.type,
-      "cache-control": versioned ? "public, max-age=31536000, immutable" : "public, max-age=86400",
-      "x-content-type-options": "nosniff",
-      "access-control-allow-origin": "*",
-    },
-  });
+  headers.set("cache-control", versioned ? "public, max-age=31536000, immutable" : "public, max-age=86400");
+  headers.set("content-type", "text/css; charset=utf-8");
+  return new Response(asset.body, { status: asset.status, headers });
 }

@@ -4,7 +4,6 @@ import { handleSite } from "./site";
 import { handleHttpApi } from "./http-api";
 import { handleKeys } from "./keys";
 import { handleDoorbell } from "./doorbell";
-import { mcpResponse } from "./mcp";
 import { htmlResponse, page } from "./pages";
 import type { ClickProps, Role } from "./types";
 
@@ -37,6 +36,8 @@ export async function apiFetch(request: Request, env: Env, ctx: ExecutionContext
   if (!identity) {
     return Response.json({ error: "This click was deleted, or this connection left it." }, { status: 401 });
   }
+  // The MCP server, its SDK and zod load only when /mcp is used.
+  const { mcpResponse } = await import("./mcp");
   return mcpResponse(request, env, ctx, identity);
 }
 
@@ -51,6 +52,12 @@ export async function defaultFetch(request: Request, env: Env, ctx: ExecutionCon
   if (api) return api;
   const site = await handleSite(request);
   if (site) return site;
+  // Brand files are static assets, served before the worker runs. This fallback only
+  // matters where that router is absent (tests, local tools).
+  if ((request.method === "GET" || request.method === "HEAD") && env.ASSETS) {
+    const asset = await env.ASSETS.fetch(request);
+    if (asset.status !== 404) return asset;
+  }
   return notFound(request, url.origin);
 }
 

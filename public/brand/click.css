@@ -1,0 +1,244 @@
+@font-face{font-family:"IBM Plex Mono";font-style:normal;font-weight:400;font-display:swap;src:url(/brand/fonts/IBMPlexMono-400-latin.woff2) format("woff2");unicode-range:U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD}
+@font-face{font-family:"IBM Plex Mono";font-style:normal;font-weight:500;font-display:swap;src:url(/brand/fonts/IBMPlexMono-500-latin.woff2) format("woff2");unicode-range:U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD}
+@font-face{font-family:"Press Start 2P";font-style:normal;font-weight:400;font-display:swap;src:url(/brand/fonts/PressStart2P-400-latin.woff2) format("woff2");unicode-range:U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD}
+/* Click design tokens. CRT (dark) is the default; add data-theme="light" for Paper. */
+:root, [data-theme="dark"] {
+  --ground: #000000;
+  --surface: #151515;
+  --ink: #ffffff;
+  --muted: #aaaaaa;
+  --line: #555555;
+  --cyan: #55ffff;
+  --magenta: #ff55ff;
+  --magenta-deep: #200020;
+  --magenta-dim: #550055;
+  --magenta-mid: #aa00aa;
+  --magenta-pale: #ffaaff;
+  --cyan-text: #55ffff;
+  --magenta-text: #ff55ff;
+  --on-cyan: #000000;
+  --on-magenta: #000000;
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 16px;
+  --space-4: 24px;
+  --space-5: 32px;
+  --space-6: 48px;
+  --space-7: 64px;
+  --radius-0: 0px;
+  --shadow-ink: 4px 4px 0 0 #ffffff;
+  --shadow-magenta: 4px 4px 0 0 #ff55ff;
+  --shadow-cyan: 4px 4px 0 0 #55ffff;
+  --border-pixel: 2px;
+  --font-display: "Press Start 2P", ui-monospace, monospace;
+  --font-mono: "IBM Plex Mono", ui-monospace, Menlo, monospace;
+}
+[data-theme="light"] {
+  --ground: #ffffff;
+  --surface: #f0f0f0;
+  --ink: #000000;
+  --muted: #555555;
+  --line: #aaaaaa;
+  --cyan: #00aaaa;
+  --magenta: #aa00aa;
+  --magenta-deep: #200020;
+  --magenta-dim: #550055;
+  --magenta-mid: #aa00aa;
+  --magenta-pale: #ffaaff;
+  --cyan-text: #006b6b;
+  --magenta-text: #aa00aa;
+  --on-cyan: #000000;
+  --on-magenta: #ffffff;
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 16px;
+  --space-4: 24px;
+  --space-5: 32px;
+  --space-6: 48px;
+  --space-7: 64px;
+  --radius-0: 0px;
+  --shadow-ink: 4px 4px 0 0 #000000;
+  --shadow-magenta: 4px 4px 0 0 #aa00aa;
+  --shadow-cyan: 4px 4px 0 0 #00aaaa;
+  --border-pixel: 2px;
+}
+.ck-type-display-xl { font-family: var(--font-display); font-size: 48px; line-height: 1.15; font-weight: 400; text-transform: uppercase; }
+.ck-type-display { font-family: var(--font-display); font-size: 32px; line-height: 1.2; font-weight: 400; text-transform: uppercase; }
+.ck-type-heading { font-family: var(--font-display); font-size: 16px; line-height: 1.5; font-weight: 400; text-transform: uppercase; }
+.ck-type-label { font-family: var(--font-display); font-size: 10px; line-height: 1.6; font-weight: 400; letter-spacing: 0.5px; text-transform: uppercase; }
+.ck-type-body-lg { font-family: var(--font-mono); font-size: 18px; line-height: 28px; font-weight: 400; }
+.ck-type-body { font-family: var(--font-mono); font-size: 15px; line-height: 24px; font-weight: 400; }
+.ck-type-body-sm { font-family: var(--font-mono); font-size: 13px; line-height: 20px; font-weight: 400; }
+.ck-type-code { font-family: var(--font-mono); font-size: 13px; line-height: 22px; font-weight: 500; }
+
+/* ClickMCP components. Plain CSS over tokens.css; classes are prefixed ck-. */
+.ck-root{background:var(--ground);color:var(--ink);font-family:var(--font-mono);font-size:15px;line-height:24px;margin:0}
+.ck-root *{box-sizing:border-box}
+.ck-label{font-family:var(--font-display);font-size:10px;line-height:1.6;letter-spacing:.5px;text-transform:uppercase}
+.ck-btn{display:inline-flex;align-items:center;gap:var(--space-2);font-family:var(--font-display);font-size:10px;line-height:1;letter-spacing:.5px;text-transform:uppercase;padding:14px var(--space-3);border:var(--border-pixel) solid var(--ink);border-radius:var(--radius-0);background:var(--cyan);color:var(--on-cyan);box-shadow:var(--shadow-ink);cursor:pointer;text-decoration:none}
+.ck-btn:hover{transform:translate(2px,2px);box-shadow:2px 2px 0 0 var(--ink)}
+.ck-btn:active,.ck-btn.is-pressed{transform:translate(4px,4px);box-shadow:none}
+.ck-btn:focus-visible{outline:var(--border-pixel) solid var(--magenta-text);outline-offset:3px}
+.ck-btn--magenta{background:var(--magenta);color:var(--on-magenta);box-shadow:var(--shadow-cyan)}
+.ck-btn--ghost{background:var(--ground);color:var(--ink)}
+.ck-btn[disabled]{background:var(--ground);color:var(--muted);border-style:dashed;box-shadow:none;cursor:not-allowed;transform:none}
+.ck-badge{display:inline-block;font-family:var(--font-display);font-size:10px;line-height:1;letter-spacing:.5px;text-transform:uppercase;padding:6px var(--space-2);border:var(--border-pixel) solid var(--ink);color:var(--ink);background:var(--ground)}
+.ck-badge--cyan{background:var(--cyan);color:var(--on-cyan);border-color:var(--cyan)}
+.ck-badge--magenta{background:var(--magenta);color:var(--on-magenta);border-color:var(--magenta)}
+.ck-badge--muted{border-color:var(--muted);color:var(--muted);border-style:dashed}
+.ck-field{display:grid;gap:var(--space-2);max-width:360px}
+.ck-field label{font-family:var(--font-display);font-size:10px;line-height:1.6;letter-spacing:.5px;text-transform:uppercase}
+.ck-input{font:500 13px/22px var(--font-mono);padding:10px var(--space-3);background:var(--ground);color:var(--ink);border:var(--border-pixel) solid var(--ink);border-radius:var(--radius-0);width:100%}
+.ck-input::placeholder{color:var(--muted)}
+.ck-input:focus{outline:none;border-color:var(--cyan-text);box-shadow:var(--shadow-cyan)}
+.ck-input.is-error{border-color:var(--magenta-text)}
+.ck-help{font-size:13px;line-height:20px;color:var(--muted)}
+.ck-help.is-error{color:var(--magenta-text)}
+.ck-key{display:inline-grid;gap:var(--space-2);padding:var(--space-3);border:var(--border-pixel) dashed var(--cyan-text);background:var(--ground)}
+.ck-key__row{display:flex;align-items:center;gap:var(--space-3)}
+.ck-key__value{font:500 15px/24px var(--font-mono);color:var(--cyan-text);letter-spacing:1px}
+.ck-key__label{font-family:var(--font-display);font-size:10px;line-height:1.6;text-transform:uppercase;color:var(--muted)}
+.ck-msg{display:grid;grid-template-columns:16px 1fr;gap:var(--space-3);padding:var(--space-2) 0;max-width:560px}
+.ck-msg__dot{width:16px;height:16px;margin-top:4px;background:var(--cyan)}
+.ck-msg__name{font-family:var(--font-display);font-size:10px;line-height:1.6;text-transform:uppercase;color:var(--cyan-text)}
+.ck-msg__time{font-size:13px;color:var(--muted);margin-left:var(--space-2)}
+.ck-msg__body{margin:var(--space-1) 0 0}
+.ck-msg--self .ck-msg__dot{background:var(--magenta)}
+.ck-msg--self .ck-msg__name{color:var(--magenta-text)}
+.ck-msg--system{grid-template-columns:1fr;font-family:var(--font-display);font-size:10px;line-height:1.6;text-transform:uppercase;color:var(--muted);border-top:var(--border-pixel) dotted var(--line);border-bottom:var(--border-pixel) dotted var(--line);padding:var(--space-2) 0}
+.ck-term{border:var(--border-pixel) solid var(--ink);background:var(--surface);max-width:560px}
+.ck-term--featured{box-shadow:var(--shadow-magenta)}
+.ck-term__bar{display:flex;justify-content:space-between;align-items:center;padding:var(--space-2) var(--space-3);border-bottom:var(--border-pixel) solid var(--ink);font-family:var(--font-display);font-size:10px;line-height:1.6;text-transform:uppercase}
+.ck-term__body{margin:0;padding:var(--space-3);font:500 13px/22px var(--font-mono);white-space:pre-wrap;overflow-x:auto}
+.ck-term .p{color:var(--cyan-text)}
+.ck-term .o{color:var(--muted)}
+.ck-term .m{color:var(--magenta-text)}
+.ck-cursor{display:inline-block;width:8px;height:14px;background:var(--ink);vertical-align:-2px}
+
+/* Click site styles. Every colour, space, border, shadow and font comes from tokens.css. */
+html{background:var(--ground)}
+body{margin:0}
+.ck-root a{color:var(--ink)}
+.ck-sr{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}
+.ck-skip{position:absolute;left:var(--space-3);top:-100px;background:var(--ground);color:var(--ink);border:var(--border-pixel) solid var(--ink);padding:var(--space-2) var(--space-3);z-index:2}
+.ck-skip:focus{top:var(--space-3)}
+.ck-root a:focus-visible,.ck-root button:focus-visible,.ck-root input:focus-visible{outline:var(--border-pixel) solid var(--magenta-text);outline-offset:3px}
+
+/* Shared nav: the Buckle and CLICK, with text links. */
+.ck-nav{display:flex;justify-content:space-between;align-items:center;gap:var(--space-3);flex-wrap:wrap}
+.ck-brand{display:flex;align-items:center;gap:var(--space-3);font-family:var(--font-display);font-size:16px;color:var(--ink);text-decoration:none}
+.ck-root a.ck-brand{color:var(--ink)}
+.ck-brand svg{color:var(--magenta);flex:none}
+.ck-nav .links{display:flex;align-items:center;gap:var(--space-4)}
+.ck-nav .links a{color:var(--ink);text-decoration:none}
+.ck-nav .links a:hover{color:var(--magenta-text)}
+
+/* Landing, as landing.html. */
+.ck-landing .hero{position:relative;display:flex;flex-direction:column;min-height:max(560px,100vh);min-height:max(560px,100svh);background:var(--ground);color:var(--ink);overflow:hidden}
+.ck-landing .hero .scene{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;object-position:60% 100%;image-rendering:pixelated}
+.ck-landing .in{position:relative;flex:1 0 auto;display:flex;flex-direction:column;width:100%;max-width:1040px;margin:0 auto;padding:var(--space-4) var(--space-5);box-sizing:border-box}
+/* The copy is centred in the hero height left under the nav, level with the fire. */
+.ck-landing .copy{max-width:500px;margin:auto 0;padding:var(--space-6) 0}
+.ck-landing h1{font-family:var(--font-display);font-weight:400;font-size:36px;line-height:1.3;margin:0 0 var(--space-4);text-transform:uppercase}
+.ck-landing .sub{font-size:18px;line-height:28px;margin:0 0 var(--space-5);max-width:26em}
+.ck-landing .cmd{border:var(--border-pixel) solid var(--ink);background:var(--ground);max-width:560px;margin:0}
+.ck-landing .cmd .tabs{display:flex;border-bottom:var(--border-pixel) solid var(--ink)}
+.ck-landing .cmd .tabs span{padding:var(--space-2) var(--space-3);color:var(--muted)}
+.ck-landing .cmd .tabs .on{background:var(--ink);color:var(--ground)}
+.ck-landing .cmd .line{display:flex;justify-content:space-between;align-items:flex-start;gap:var(--space-3);padding:var(--space-3);font:500 13px/22px var(--font-mono)}
+.ck-landing .cmd .line b{color:var(--magenta-text);font-weight:500}
+.ck-landing .cmd .cp{flex:none;background:var(--ground);color:var(--muted);border:0;padding:0;cursor:pointer;line-height:22px}
+.ck-landing .cmd .cp:hover,.ck-landing .cmd .cp.is-done{color:var(--ink)}
+.ck-landing .steps{max-width:1040px;margin:0 auto;padding:var(--space-6) var(--space-5);display:grid;grid-template-columns:repeat(3,1fr);gap:var(--space-5)}
+.ck-landing .steps h2{font-family:var(--font-display);font-weight:400;font-size:16px;line-height:1.5;margin:0 0 var(--space-2);text-transform:uppercase}
+.ck-landing .steps p{margin:0;color:var(--muted)}
+.ck-landing .facts{border-top:var(--border-pixel) dotted var(--line)}
+.ck-landing .facts h2{color:var(--magenta-text)}
+.ck-foot{max-width:1040px;margin:0 auto;padding:var(--space-4) var(--space-5) var(--space-6);display:flex;flex-wrap:wrap;gap:var(--space-4);border-top:var(--border-pixel) dotted var(--line)}
+.ck-foot a{color:var(--muted);text-decoration:none}
+.ck-foot a:hover{color:var(--ink)}
+
+/* Below 700px: rows stack and the copy sits above the fire. */
+@media (max-width:700px){
+  /* Stacked: the fire sits at the foot of the screen (its sky trimmed a little); the copy is centred in the space above it. */
+  /* The hero fills the screen; the art's empty night sky slides up under the copy so there is no dead band between them. */
+  .ck-landing .hero{min-height:100vh;min-height:100svh}
+  .ck-landing .in{z-index:1;padding:var(--space-3)}
+  .ck-landing .copy{padding:var(--space-5) 0}
+  /* The fire is big and rises up behind the copy box; the box sits above it on solid black so the line stays readable. */
+  .ck-landing .hero .scene{position:relative;z-index:0;order:2;flex:0 0 auto;width:100%;height:66vh;height:66svh;object-fit:cover;object-position:74% 100%;margin-top:-40vh;margin-top:-40svh}
+  .ck-landing .cmd{position:relative;z-index:2;background:var(--ground)}
+  /* COPY moves up into the tab row, top right, beside TELL YOUR AGENT. */
+  .ck-landing .cmd .tabs span{line-height:20px}
+  .ck-landing .cmd .cp{position:absolute;top:0;right:0;height:calc(20px + 2 * var(--space-2));line-height:20px;padding:0 var(--space-3);display:flex;align-items:center;background:transparent}
+  .ck-landing h1{font-size:24px}
+  .ck-landing .sub{font-size:15px;line-height:24px}
+  .ck-landing .steps{grid-template-columns:1fr;padding:var(--space-5) var(--space-3);gap:var(--space-4)}
+  .ck-foot{padding:var(--space-4) var(--space-3) var(--space-5)}
+}
+
+/* Phones (up to 480px): everything about 30% bigger, because the whole idea is simple. Desktop is unchanged. */
+@media (max-width:480px){
+  .ck-landing .ck-brand{font-size:21px}
+  .ck-landing .ck-brand svg{width:34px;height:26px}
+  .ck-landing .ck-nav .links{font-size:13px}
+  .ck-landing h1{font-size:min(31px,7.6vw);line-height:1.35}
+  .ck-landing .sub{font-size:19.5px;line-height:31px}
+  .ck-landing .cmd .tabs span{font-size:13px;padding:var(--space-3) var(--space-4)}
+  .ck-landing .cmd .line{flex-direction:column;gap:var(--space-2);font-size:17px;line-height:28px;padding:var(--space-4)}
+  .ck-landing .cmd .line b{white-space:nowrap}
+  .ck-landing .cmd .cp{height:calc(20px + 2 * var(--space-3));font-size:13px;padding:0 var(--space-4)}
+  .ck-landing .steps h2{font-size:20px}
+  .ck-landing .steps p{font-size:17px;line-height:27px}
+}
+
+/* Sign-in, consent, verify, invite, key and error pages. */
+.ck-page .frame{max-width:640px;margin:0 auto;padding:var(--space-4) var(--space-4) var(--space-7)}
+.ck-page main{margin-top:var(--space-6);border:var(--border-pixel) solid var(--ink);box-shadow:var(--shadow-magenta);padding:var(--space-5);background:var(--ground)}
+.ck-page h1{font-family:var(--font-display);font-weight:400;font-size:20px;line-height:1.4;text-transform:uppercase;margin:0 0 var(--space-4)}
+.ck-page h2{font-family:var(--font-display);font-weight:400;font-size:12px;line-height:1.6;text-transform:uppercase;margin:var(--space-5) 0 var(--space-2)}
+.ck-page p{margin:0 0 var(--space-3)}
+.ck-page a{color:var(--magenta-text)}
+.ck-page form{display:grid;gap:var(--space-2);margin:var(--space-4) 0}
+.ck-page label{display:block;margin-top:var(--space-2)}
+.ck-page label:has(input[type=radio]),.ck-page label:has(input[type=checkbox]){display:flex;align-items:center;gap:var(--space-2);margin-top:0}
+.ck-page input[type=radio],.ck-page input[type=checkbox]{accent-color:var(--magenta);width:16px;height:16px;margin:0}
+.ck-page input:not([type=radio]):not([type=checkbox]):not([type=hidden]){font:500 13px/22px var(--font-mono);padding:10px var(--space-3);background:var(--ground);color:var(--ink);border:var(--border-pixel) solid var(--ink);border-radius:var(--radius-0);width:100%;box-sizing:border-box}
+.ck-page input:not([type=radio]):not([type=checkbox]):focus{outline:none;border-color:var(--cyan-text);box-shadow:var(--shadow-cyan)}
+.ck-page form p{margin:var(--space-3) 0 0;display:flex;flex-wrap:wrap;gap:var(--space-3)}
+.ck-page button{display:inline-flex;align-items:center;gap:var(--space-2);font-family:var(--font-display);font-size:10px;line-height:1;letter-spacing:.5px;text-transform:uppercase;padding:14px var(--space-3);border:var(--border-pixel) solid var(--ink);border-radius:var(--radius-0);background:var(--cyan);color:var(--on-cyan);box-shadow:var(--shadow-ink);cursor:pointer}
+.ck-page button:hover{transform:translate(2px,2px);box-shadow:2px 2px 0 0 var(--ink)}
+.ck-page button:active{transform:translate(4px,4px);box-shadow:none}
+.ck-page button.secondary,.ck-page button[type=button]{background:var(--ground);color:var(--ink)}
+.ck-page .error{color:var(--magenta-text);border-left:var(--border-pixel) solid var(--magenta);padding-left:var(--space-3)}
+.ck-page .muted{color:var(--muted)}
+.ck-page .muted a{color:var(--muted)}
+.ck-page .secret{font:500 15px/24px var(--font-mono);color:var(--cyan-text);letter-spacing:1px;border:var(--border-pixel) dashed var(--cyan-text);padding:var(--space-3);word-break:break-all}
+.ck-page code{font:500 13px/22px var(--font-mono);color:var(--magenta-text)}
+.ck-page strong{font-weight:500;color:var(--ink)}
+
+/* Docs and plain text pages. */
+.ck-doc .frame{max-width:760px;margin:0 auto;padding:var(--space-4) var(--space-4) var(--space-7)}
+.ck-doc main{margin-top:var(--space-6)}
+.ck-doc h1{font-family:var(--font-display);font-weight:400;font-size:24px;line-height:1.4;text-transform:uppercase;margin:0 0 var(--space-4)}
+.ck-doc h2{font-family:var(--font-display);font-weight:400;font-size:14px;line-height:1.6;text-transform:uppercase;margin:var(--space-6) 0 var(--space-3);color:var(--magenta-text)}
+.ck-doc h3{font-family:var(--font-display);font-weight:400;font-size:10px;line-height:1.6;text-transform:uppercase;margin:var(--space-5) 0 var(--space-2)}
+.ck-doc p,.ck-doc li{color:var(--ink)}
+.ck-doc a{color:var(--magenta-text)}
+.ck-doc .toc{display:flex;flex-wrap:wrap;gap:var(--space-2) var(--space-4);margin:var(--space-4) 0;padding:var(--space-3) 0;border-top:var(--border-pixel) dotted var(--line);border-bottom:var(--border-pixel) dotted var(--line)}
+.ck-doc .toc a{color:var(--ink);text-decoration:none}
+.ck-doc .toc a:hover{color:var(--magenta-text)}
+.ck-doc code{font:500 13px/22px var(--font-mono);color:var(--magenta-text)}
+.ck-doc pre{border:var(--border-pixel) solid var(--ink);background:var(--surface);margin:0 0 var(--space-3);padding:var(--space-3);overflow-x:auto}
+.ck-doc pre code{color:var(--ink);white-space:pre}
+.ck-doc table{border-collapse:collapse;width:100%;margin:0 0 var(--space-3)}
+.ck-doc th,.ck-doc td{border:var(--border-pixel) solid var(--line);padding:var(--space-2);text-align:left;vertical-align:top}
+.ck-doc th{font-family:var(--font-display);font-size:10px;font-weight:400;text-transform:uppercase}
+.ck-doc footer{margin-top:var(--space-6);padding-top:var(--space-3);border-top:var(--border-pixel) dotted var(--line);display:flex;flex-wrap:wrap;gap:var(--space-4)}
+.ck-doc footer a{color:var(--muted);text-decoration:none}
+@media (max-width:700px){.ck-page main{padding:var(--space-4)}.ck-doc h1{font-size:18px}}
+
+/* Connect page: the agent's handle, big. */
+.ck-page .handle-big{font-family:var(--font-display);font-size:22px;line-height:1.4;color:var(--magenta-text);word-break:break-all;margin:var(--space-3) 0 var(--space-4)}
+.ck-page a.button{display:inline-flex;align-items:center;font-family:var(--font-display);font-size:10px;line-height:1;letter-spacing:.5px;text-transform:uppercase;padding:14px var(--space-3);border:var(--border-pixel) solid var(--ink);background:var(--cyan);color:var(--on-cyan);box-shadow:var(--shadow-ink);text-decoration:none}
+.ck-page input.handle-input{font-size:17px!important;color:var(--magenta-text)!important}

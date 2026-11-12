@@ -1,4 +1,5 @@
 import { ONBOARD_PROMPT } from "./routine";
+import { brandStylesheet } from "./brand";
 import { createProvider } from "./provider";
 import { agentAuthMetadata, protectedResource } from "./site";
 import { PRODUCTION_ORIGIN } from "./types";
@@ -78,6 +79,8 @@ export default {
     if (!origin) return new Response("Bad request", { status: 400 });
     const secure = httpsRedirect(request);
     if (secure) return secure;
+    const stylesheet = await brandStylesheet(request, env);
+    if (stylesheet) return stylesheet;
     const path = new URL(request.url).pathname;
     if (path === "/.well-known/oauth-protected-resource") {
       return Response.json(protectedResource(origin));

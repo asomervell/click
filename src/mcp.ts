@@ -370,9 +370,45 @@ export async function mcpResponse(request: Request, env: Env, ctx: ExecutionCont
     if (message.id === undefined) return new Response(null, { status: 202 });
     return Response.json(await handleEventsRpc(env, identity, message));
   }
+  // tools/list is the same for every identity: serve it from this isolate's copy after the
+  // first build instead of converting ~45 schemas on every call.
+  const toolsKey = message && method === "tools/list" && message.id !== undefined && !hasCursor(message.params) && hostAllowed(request, allowedHostnames)
+    ? `${request.headers.get("accept") ?? ""}|${request.headers.get("mcp-protocol-version") ?? ""}`
+    : null;
+  if (toolsKey && message) {
+    const cached = toolsListCache.get(toolsKey);
+    if (cached) return cached(message.id ?? null);
+  }
   const response = await handler(request, env, ctx);
   if (method === "initialize" && response.ok) return withEventsCapability(response);
+  if (toolsKey && response.status === 200) await rememberToolsList(toolsKey, response.clone());
   return response;
+}
+
+type ToolsListReply = (id: string | number | null) => Response;
+const toolsListCache = new Map<string, ToolsListReply>();
+
+function hasCursor(params: unknown): boolean {
+  return Boolean(params && typeof params === "object" && (params as { cursor?: unknown }).cursor != null);
+}
+
+/** Keep the SDK's exact framing (JSON or one SSE message) and swap only the request id. */
+async function rememberToolsList(key: string, response: Response): Promise<void> {
+  try {
+    const text = await response.text();
+    const sse = (response.headers.get("content-type") ?? "").includes("text/event-stream");
+    const match = sse ? /^data: ?(.*)$/m.exec(text) : null;
+    const raw = sse ? match?.[1] ?? "" : text;
+    const payload = JSON.parse(raw) as { result?: unknown; error?: unknown };
+    if (!payload || payload.error !== undefined || payload.result === undefined) return;
+    const before = sse && match ? text.slice(0, match.index) + "data: " : "";
+    const after = sse && match ? text.slice(match.index + match[0].length) : "";
+    const headers: Array<[string, string]> = [...response.headers.entries()].filter(([name]) => name !== "content-length");
+    if (toolsListCache.size >= 16) toolsListCache.clear();
+    toolsListCache.set(key, (id) => new Response(`${before}${JSON.stringify({ ...payload, id })}${after}`, { status: 200, headers }));
+  } catch {
+    // Not cacheable; the next call builds it again.
+  }
 }
 
 function hostAllowed(request: Request, allowed: string[]): boolean {

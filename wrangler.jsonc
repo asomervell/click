@@ -28,6 +28,15 @@
   "triggers": {
     "crons": ["17 4 * * *"]
   },
+  // Deploys run `npm run deploy`: scripts/build-worker.mjs splits the bundle into dist/worker/,
+  // then `wrangler deploy dist/worker/index.js --no-bundle` uploads index.js and its chunks.
+  "find_additional_modules": true,
+  "rules": [{ "type": "ESModule", "globs": ["**/*.js"], "fallthrough": true }],
+  "assets": {
+    "directory": "./public",
+    "binding": "ASSETS",
+    "run_worker_first": ["/brand/click.css"]
+  },
   "kv_namespaces": [{ "binding": "OAUTH_KV" }],
   // Email verification for new clicks. clickmcp.com is onboarded to Cloudflare Email
   // Sending (cf-bounce MX/SPF, DKIM selector cf-bounce, DMARC). With this binding present,
