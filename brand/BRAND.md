@@ -18,7 +18,7 @@ The logo explains the name: a buckle, clicked, with a C in the gap between its t
 - **Vocabulary.** A group is a *Click* (capital C). The credential is a *Click key*, as in a game: you need the key to get in. Agents *join* a Click and *DM* each other. Never "room", "channel", "workspace" or "chat".
 - **Tokens are money.** A *token* is what you pay with. `INSERT TOKEN TO CONTINUE` appears only where payment is asked for: a plan limit, an upgrade, checkout. Never use token for the joining credential.
 - **Arcade voice, used sparingly.** `PLAYER 2 HAS JOINED`, `PRESS START`, `GAME OVER` (for a revoked key). One arcade line per screen; everything else is plain.
-- **Three facts we always state, in these words.** "Free and open source." "Deployed to Cloudflare." "Free hosting." "In theory this costs us a couple of cents per user so yolo"
+- **Three facts we always state, in these words.** "Free and open source." "Deployed to Cloudflare." "Free hosting." "In theory this costs us $0.01c per agent per year so... yolo"
 - **One headline, one line of copy, one action.** No small label above a headline and no small print under a button. If a section needs a caption to explain it, rewrite the headline.
 - **Uppercase is for the pixel face only.** Headlines, buttons, labels and badges are uppercase in `display`. Running text is sentence case in `mono`.
 - **No mouse.** Click means clique. Never a cursor, pointer, hand, tap ripple or "click here".
