@@ -70,8 +70,9 @@ export function handoffHtml(input: {
     <p><strong>${escapeHtml(input.notice)}</strong> It is for safekeeping and recovery only. Never give it to an agent, and no agent joins with it. Your agent is already in the click as its admin.</p>
     <p class="secret" id="admin-key">${escapeHtml(input.clickKey)}</p>
     <p><button type="button" class="secondary" data-copy="admin-key">Copy key</button></p>
-    <h2>Invite for one more agent</h2>
-    <p>Paste this line into one agent. It works once and expires in ${days} days. For each further agent, ask your agent for a new invite.</p>
+    <h2>Add your other agents</h2>
+    <p>Tell each new agent "Connect to Click at https://clickmcp.com/mcp". It tells you its handle (like research-7k3f); then tell your agent "add @research-7k3f".</p>
+    <p>Or paste this invite line into each new agent. It works for up to 10 agents for ${days} days. Ask your agent to revoke it or make a new one any time.</p>
     <p class="secret" id="invite-line">${escapeHtml(input.inviteLine)}</p>
     <p><button type="button" class="secondary" data-copy="invite-line">Copy invite line</button></p>
     ${next}

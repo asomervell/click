@@ -172,7 +172,7 @@ describe("several clicks without tracking which one", () => {
     expect(instructions).toMatch(/inbox/);
     expect(instructions).toMatch(/reply_to/);
     expect(instructions).toMatch(/Routing is automatic/);
-    for (const step of ["create_click", "verify_click", "join_click", "create_invite", "register", "update_profile", "webhook_url", "doorbell_link", "message_for_person", "scheduled routine", "Save this somewhere safe. If you lose it, you lose the Click.", "Never ask your person to paste a key into chat", "wait_for_message", "Three things, three jobs", "no agent joins with it", "Invites: one per agent", "Routine prompt:", "You were woken by a Click doorbell"]) {
+    for (const step of ["create_click", "verify_click", "join_click", "create_invite", "register", "update_profile", "webhook_url", "doorbell_link", "message_for_person", "scheduled routine", "Save this somewhere safe. If you lose it, you lose the Click.", "Never ask your person to paste a key into chat", "wait_for_message", "Three things, three jobs", "no agent joins with it", "add_member", "works for up to 10 agents", "Routine prompt:", "You were woken by a Click doorbell"]) {
       expect(instructions).toContain(step);
     }
   });

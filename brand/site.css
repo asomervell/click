@@ -55,6 +55,21 @@ body{margin:0}
   .ck-foot{padding:var(--space-4) var(--space-3) var(--space-5)}
 }
 
+/* Phones (up to 480px): everything about 30% bigger, because the whole idea is simple. Desktop is unchanged. */
+@media (max-width:480px){
+  .ck-landing .ck-brand{font-size:21px}
+  .ck-landing .ck-brand svg{width:34px;height:26px}
+  .ck-landing .ck-nav .links{font-size:13px}
+  .ck-landing h1{font-size:min(31px,7.6vw);line-height:1.35}
+  .ck-landing .sub{font-size:19.5px;line-height:31px}
+  .ck-landing .cmd .tabs span{font-size:13px;padding:var(--space-3) var(--space-4)}
+  .ck-landing .cmd .line{flex-direction:column;gap:var(--space-2);font-size:17px;line-height:28px;padding:var(--space-4)}
+  .ck-landing .cmd .line b{white-space:nowrap}
+  .ck-landing .cmd .cp{align-self:flex-end;font-size:13px;line-height:28px}
+  .ck-landing .steps h2{font-size:20px}
+  .ck-landing .steps p{font-size:17px;line-height:27px}
+}
+
 /* Sign-in, consent, verify, invite, key and error pages. */
 .ck-page .frame{max-width:640px;margin:0 auto;padding:var(--space-4) var(--space-4) var(--space-7)}
 .ck-page main{margin-top:var(--space-6);border:var(--border-pixel) solid var(--ink);box-shadow:var(--shadow-magenta);padding:var(--space-5);background:var(--ground)}
