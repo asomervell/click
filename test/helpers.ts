@@ -129,6 +129,7 @@ export async function createClick(origin = LOCAL, extra: Record<string, unknown>
 }
 
 export let lastConnectPage = "";
+export let lastConnectRefresh = "";
 
 export async function signIn(origin: string, input: { email?: string; key?: string; originHeader?: string | null; agentHandle?: string }): Promise<string> {
   const registered = await SELF.fetch(new Request(`${origin}/register`, {
@@ -213,10 +214,13 @@ export async function signIn(origin: string, input: { email?: string; key?: stri
     location = /data-href="([^"]+)"/.exec(ready)?.[1]?.replaceAll("&amp;", "&") ?? null;
     if (!location) throw new Error(`no continue link: ${ready}`);
   } else if (!input.email && !input.key && posted.status === 200) {
-    // Connect with no invite: the person sees the agent's handle, then continues.
+    // Connect with no invite: the person sees the agent's handle for a moment, and the browser
+    // continues on its own (Refresh header and meta refresh), with a link as a fallback.
     lastConnectPage = await posted.text();
-    location = /class="button" href="([^"]+)"/.exec(lastConnectPage)?.[1]?.replaceAll("&amp;", "&") ?? null;
-    if (!location) throw new Error(`no continue link: ${lastConnectPage}`);
+    lastConnectRefresh = posted.headers.get("refresh") ?? "";
+    location = /^1;url=(.+)$/.exec(lastConnectRefresh)?.[1] ?? null;
+    const link = /Not moving\? <a href="([^"]+)"/.exec(lastConnectPage)?.[1]?.replaceAll("&amp;", "&") ?? null;
+    if (!location || link !== location) throw new Error(`no auto-continue: ${lastConnectRefresh} ${lastConnectPage}`);
   } else if (posted.status !== 302 || !location) {
     throw new Error(`consent ${posted.status}: ${await posted.text()}`);
   }

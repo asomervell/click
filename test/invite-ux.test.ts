@@ -1,6 +1,6 @@
 import { SELF } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
-import { api, callTool, createClick, handle, initialize, lastConnectPage, LOCAL, signIn } from "./helpers";
+import { api, callTool, createClick, handle, initialize, lastConnectPage, lastConnectRefresh, LOCAL, signIn } from "./helpers";
 
 async function signup(base: string): Promise<{ token: string; handle: string; message_for_person: string }> {
   const response = await SELF.fetch(`${LOCAL}/api/v1/agents/signup`, {
@@ -149,6 +149,9 @@ describe("agents that sign up on their own", () => {
     const wanted = handle("codex");
     const token = await signIn(LOCAL, { agentHandle: wanted });
     expect(lastConnectPage).toContain(`@${wanted}`);
+    // Hands back to the loopback callback on its own: a native app's listener may not wait for a click.
+    expect(lastConnectRefresh).toMatch(/^1;url=http:\/\/127\.0\.0\.1:8765\/callback\?code=.+&state=state-1&iss=/);
+    expect(lastConnectPage).toContain('<meta http-equiv="refresh" content="1;url=http://127.0.0.1:8765/callback?');
     await initialize(LOCAL, token);
     const empty = (await callTool(LOCAL, token, "list_clicks")) as { clicks: unknown[]; you: { handle: string } };
     expect(empty.clicks).toEqual([]);

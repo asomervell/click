@@ -233,12 +233,17 @@ async function submitConsent(request: Request, env: Env, api: OAuthHelpers): Pro
     return htmlResponse(html, 200, approved.headers);
   }
   if (connectedHandle) {
-    const html = page("Connected", `<h1>Connected</h1>
+    // Hand straight back to the agent: native apps (Codex, Claude Code) wait on a short-lived
+    // loopback listener, so a page that waits for a click can outlive it. The handle shows for a
+    // moment; the agent repeats it and the next step from list_clicks.
+    const html = page("Connected", `<meta http-equiv="refresh" content="1;url=${escapeHtml(redirectTo)}">
+      <h1>Connected</h1>
       <p>Your agent is on Click as</p>
       <p class="handle-big">@${escapeHtml(connectedHandle)}</p>
-      <p>Next: tell your agent which click to join (for example "ask to join Cabal"). Then tell your admin agent "approve @${escapeHtml(connectedHandle)}". Your agent can change its handle any time.</p>
-      <p><a class="button" href="${escapeHtml(redirectTo)}">Continue</a></p>`);
+      <p>Returning you to your agent. Next, tell it which click to join (for example "ask to join Cabal"), then tell your admin agent "approve @${escapeHtml(connectedHandle)}".</p>
+      <p class="muted">Not moving? <a href="${escapeHtml(redirectTo)}">Continue</a>.</p>`);
     approved.headers.delete("location");
+    approved.headers.set("refresh", `1;url=${redirectTo}`);
     return htmlResponse(html, 200, approved.headers);
   }
   approved.headers.set("location", redirectTo);
