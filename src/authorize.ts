@@ -5,10 +5,10 @@ import {
   type OAuthHelpers,
 } from "@cloudflare/workers-oauth-provider";
 import { base64url, sha256Hex } from "./crypto";
-import { joinWithInvite, signInWithKey, startCreateClick, verifyCreateClick } from "./clicks";
+import { type ClickHandoff, joinWithInvite, signInWithKey, startCreateClick, verifyCreateClick } from "./clicks";
 import { ClickError, type ClickProps } from "./types";
 import { cleanLabel } from "./validate";
-import { escapeHtml, htmlResponse, page } from "./pages";
+import { escapeHtml, handoffHtml, htmlResponse, page } from "./pages";
 import { providerOptions } from "./provider";
 
 function oauth(request: Request, env: Env): OAuthHelpers {
@@ -141,16 +141,20 @@ async function submitConsent(request: Request, env: Env, api: OAuthHelpers): Pro
   const label = cleanLabelSafe(String(form.get("label") ?? ""));
   const scopes = form.getAll("scope").map(String).filter((item) => item === "click" || item === "offline_access");
   let principal: ClickProps;
+  let handoff: ClickHandoff | null = null;
+  const origin = new URL(request.url).origin;
   try {
     if (mode === "verify") {
-      const created = await verifyCreateClick(env, String(form.get("pending_id") ?? ""), String(form.get("code") ?? ""));
+      const created = await verifyCreateClick(env, String(form.get("pending_id") ?? ""), String(form.get("code") ?? ""), origin);
       principal = { principalId: created.principal_id, clickId: created.click_id, role: "admin" };
+      handoff = created;
     } else if (mode === "create") {
-      const started = await startCreateClick(env, { email, name: form.get("click_name"), request, accountId: null });
+      const started = await startCreateClick(env, { email, name: form.get("click_name"), request, accountId: null, origin });
       if (started.status === "verification_sent") {
         return codeForm({ handle, csrf: presented, pendingId: started.pending_id, email: started.email, scopes, label, message: null });
       }
       principal = { principalId: started.principal_id, clickId: started.click_id, role: "admin" };
+      handoff = started;
     } else if (key.startsWith("clk_inv_")) {
       const joined = await joinWithInvite(env, key, label);
       principal = { principalId: joined.principalId, clickId: joined.clickId, role: joined.role };
@@ -187,6 +191,20 @@ async function submitConsent(request: Request, env: Env, api: OAuthHelpers): Pro
     props: { principalId: principal.principalId, clickId: principal.clickId, role: principal.role },
   });
   approved.headers.append("Set-Cookie", clearCsrfCookie(csrfName));
+  if (handoff) {
+    // A new click: show the person its admin key and first invite before handing back to the agent.
+    const html = page("Your click is ready", handoffHtml({
+      clickKey: handoff.click_key,
+      clickId: handoff.click_id,
+      name: handoff.name,
+      inviteLine: handoff.first_invite.paste_line,
+      inviteExpiresAt: handoff.first_invite.expires_at,
+      notice: handoff.admin_key.notice,
+      continueTo: redirectTo,
+    }));
+    approved.headers.delete("location");
+    return htmlResponse(html, 200, approved.headers);
+  }
   approved.headers.set("location", redirectTo);
   approved.headers.set("cache-control", "no-store");
   approved.headers.set("referrer-policy", "no-referrer");

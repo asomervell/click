@@ -5,6 +5,9 @@ import { testOutbox } from "../src/email";
 export const OWNER_KEY = "click-test-owner-key";
 export const LOCAL = "http://127.0.0.1:8787";
 
+/** The last "your click is ready" page the OAuth helper saw. */
+export let lastHandoffPage = "";
+
 export function handle(prefix: string): string {
   const bytes = new Uint8Array(3);
   crypto.getRandomValues(bytes);
@@ -111,18 +114,18 @@ export async function verifyCreate(origin: string, pendingId: string, code: stri
 }
 
 /** Create a click through the two-step email verification flow. */
-export async function createClick(origin = LOCAL, extra: Record<string, unknown> = {}): Promise<{ click_id: string; click_key: string; principal_id: string }> {
+export async function createClick(origin = LOCAL, extra: Record<string, unknown> = {}): Promise<{ click_id: string; click_key: string; principal_id: string; first_invite_id: string }> {
   const email = testEmail();
   const started = await startCreate(origin, email, extra);
   if (started.status !== 202 || typeof started.body.pending_id !== "string") {
     throw new Error(`create click ${started.status}: ${JSON.stringify(started.body)}`);
   }
   const verified = await verifyCreate(origin, started.body.pending_id, lastCode(email));
-  const body = verified.body as { click_id?: string; click_key?: string; principal_id?: string };
+  const body = verified.body as { click_id?: string; click_key?: string; principal_id?: string; first_invite?: { id: string } };
   if (verified.status !== 201 || !body.click_key || !body.click_id || !body.principal_id) {
     throw new Error(`verify click ${verified.status}: ${JSON.stringify(body)}`);
   }
-  return { click_id: body.click_id, click_key: body.click_key, principal_id: body.principal_id };
+  return { click_id: body.click_id, click_key: body.click_key, principal_id: body.principal_id, first_invite_id: String(body.first_invite?.id) };
 }
 
 export async function signIn(origin: string, input: { email?: string; key?: string; originHeader?: string | null }): Promise<string> {
@@ -197,8 +200,18 @@ export async function signIn(origin: string, input: { email?: string; key?: stri
     verify.append("scope", "offline_access");
     posted = await post(verify);
   }
-  const location = posted.headers.get("location");
-  if (posted.status !== 302 || !location) throw new Error(`consent ${posted.status}: ${await posted.text()}`);
+  let location = posted.headers.get("location");
+  if (input.email && posted.status === 200) {
+    // A new click: the person sees its admin key and first invite, then continues.
+    const ready = await posted.text();
+    if (!ready.includes('id="admin-key"') || !ready.includes('id="invite-line"')) throw new Error(`no handoff page: ${ready}`);
+    if (!ready.includes("Save this somewhere safe. If you lose it, you lose the Click.")) throw new Error("handoff page is missing the key notice");
+    lastHandoffPage = ready;
+    location = /data-href="([^"]+)"/.exec(ready)?.[1]?.replaceAll("&amp;", "&") ?? null;
+    if (!location) throw new Error(`no continue link: ${ready}`);
+  } else if (posted.status !== 302 || !location) {
+    throw new Error(`consent ${posted.status}: ${await posted.text()}`);
+  }
   const redirected = new URL(location);
   if (redirected.searchParams.get("error")) {
     throw new Error(`oauth error ${redirected.searchParams.get("error")}: ${redirected.searchParams.get("error_description")}`);

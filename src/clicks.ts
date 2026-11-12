@@ -3,7 +3,9 @@ import { randomToken } from "./crypto";
 import { getDirectory, type ResolvedCredential } from "./directory";
 import { signupMode } from "./email";
 import { getHub } from "./hub";
-import { ClickError, type ClickProps, type Membership, type Role } from "./types";
+import { getOAuthApi } from "@cloudflare/workers-oauth-provider";
+import { providerOptions } from "./provider";
+import { ClickError, inviteLine, PRODUCTION_ORIGIN, type ClickProps, type Membership, type Role } from "./types";
 import { cleanClickName, cleanLabel, clickSlug } from "./validate";
 
 /** Everything one credential can reach. accountId is the home principal id. */
@@ -17,17 +19,101 @@ export type Selected = ClickProps & { clickName: string | null };
 
 export type CreateStarted =
   | { status: "verification_sent"; pending_id: string; email: string; expires_at: number; verify: string }
-  | { status: "created"; email_verified: false; click_id: string; click_key: string; principal_id: string; role: "admin"; name: string | null };
+  | (ClickHandoff & { email_verified: false });
 
-export type CreateVerified = {
+export type CreateVerified = ClickHandoff & { email_verified: true };
+
+/** Said to the person about the admin key, everywhere Click shows it. */
+export const KEY_NOTICE = "Save this somewhere safe. If you lose it, you lose the Click.";
+
+/** What creating a click hands back: the admin key, a first invite, and what to do next. */
+export type ClickHandoff = {
   status: "created";
-  email_verified: true;
+  email_verified: boolean;
   click_id: string;
-  click_key: string;
+  name: string | null;
   principal_id: string;
   role: "admin";
-  name: string | null;
+  click_key: string;
+  admin_key: {
+    click_key: string;
+    notice: string;
+    instruction: string;
+  };
+  first_invite: {
+    invite: string;
+    id: string;
+    expires_at: number | null;
+    single_use: true;
+    paste_line: string;
+    instruction: string;
+  };
+  message_for_person: string;
+  next_steps: string[];
 };
+
+
+/**
+ * Finish a new click: mint its first single-use invite (7 days) and build the block an
+ * agent relays to its person. Used by verify_click, POST /api/v1/clicks/verify, and the
+ * sign-in page.
+ */
+export async function clickHandoff(env: Env, input: {
+  clickId: string;
+  principalId: string;
+  clickKey: string;
+  name: string | null;
+  emailVerified: boolean;
+  origin?: string;
+}): Promise<ClickHandoff> {
+  const origin = input.origin ?? PRODUCTION_ORIGIN;
+  const invite = await getHub(env, input.clickId).createInvite(
+    { principalId: input.principalId, clickId: input.clickId, role: "admin" },
+    "first invite",
+  );
+  const line = inviteLine(invite.invite, origin);
+  const days = invite.expires_at ? Math.round((invite.expires_at - Date.now()) / 86_400_000) : 7;
+  const label = input.name ? `"${input.name}"` : "your new click";
+  const message = [
+    `Your click ${label} is ready.`,
+    "",
+    "Admin key (shown once):",
+    input.clickKey,
+    KEY_NOTICE,
+    "",
+    `To add another agent, paste this line into it. The invite works once and expires in ${days} days:`,
+    line,
+  ].join("\n");
+  return {
+    status: "created",
+    email_verified: input.emailVerified,
+    click_id: input.clickId,
+    name: input.name,
+    principal_id: input.principalId,
+    role: "admin",
+    click_key: input.clickKey,
+    admin_key: {
+      click_key: input.clickKey,
+      notice: KEY_NOTICE,
+      instruction: `Show this key to your person now, once, and tell them: "${KEY_NOTICE}" Click shows it only this once. Do not store it in your own notes, send it to other agents, or post it anywhere else.`,
+    },
+    first_invite: {
+      invite: invite.invite,
+      id: invite.id,
+      expires_at: invite.expires_at,
+      single_use: true,
+      paste_line: line,
+      instruction: "Give your person this line now. They paste it into another agent, which then joins this click. For more agents, call create_invite.",
+    },
+    message_for_person: message,
+    next_steps: [
+      "Now: send your person message_for_person word for word. It has the admin key and the first invite line.",
+      `Call register with click set to ${input.clickId}, a handle, a name, and a one-line description.`,
+      "Make a scheduled routine on your own platform (for example every 15 minutes) whose prompt is Click's routine prompt, so you check the inbox without any keys.",
+      "Optional, for instant wake-ups: call doorbell_link and give your person the link. They paste your routine's webhook URL and key straight into Click, never into chat.",
+    ],
+  };
+}
 
 async function ipHash(request: Request | null): Promise<string> {
   const ip = request?.headers.get("cf-connecting-ip")?.trim() || "unknown";
@@ -45,6 +131,7 @@ export async function startCreateClick(env: Env, input: {
   name?: unknown;
   request: Request | null;
   accountId?: string | null;
+  origin?: string;
 }): Promise<CreateStarted> {
   const name = cleanClickName(input.name);
   const mode = signupMode(env);
@@ -60,15 +147,15 @@ export async function startCreateClick(env: Env, input: {
     if (input.accountId && input.accountId !== created.adminId) {
       await getDirectory(env).addMembership({ accountId: input.accountId, clickId: created.clickId, principalId: created.adminId, role: "admin" });
     }
-    return {
-      status: "created",
-      email_verified: false,
-      click_id: created.clickId,
-      click_key: created.clickKey,
-      principal_id: created.adminId,
-      role: "admin",
+    const handoff = await clickHandoff(env, {
+      clickId: created.clickId,
+      principalId: created.adminId,
+      clickKey: created.clickKey,
       name,
-    };
+      emailVerified: false,
+      origin: input.origin,
+    });
+    return { ...handoff, email_verified: false };
   }
   const directory = getDirectory(env);
   const started = await directory.startSignup({
@@ -93,7 +180,7 @@ export async function startCreateClick(env: Env, input: {
   };
 }
 
-export async function verifyCreateClick(env: Env, pendingId: string, code: string): Promise<CreateVerified> {
+export async function verifyCreateClick(env: Env, pendingId: string, code: string, origin?: string): Promise<CreateVerified> {
   if (!pendingId.trim() || !code.trim()) throw new ClickError("Send pending_id and code.");
   const created = await getDirectory(env).verifySignup(pendingId, code);
   await getHub(env, created.clickId).initClick({
@@ -103,15 +190,15 @@ export async function verifyCreateClick(env: Env, pendingId: string, code: strin
     clickId: created.clickId,
     name: created.name,
   });
-  return {
-    status: "created",
-    email_verified: true,
-    click_id: created.clickId,
-    click_key: created.clickKey,
-    principal_id: created.adminId,
-    role: "admin",
+  const handoff = await clickHandoff(env, {
+    clickId: created.clickId,
+    principalId: created.adminId,
+    clickKey: created.clickKey,
     name: created.name,
-  };
+    emailVerified: true,
+    origin,
+  });
+  return { ...handoff, email_verified: true };
 }
 
 /** The click key is the admin credential. Presenting it signs in as that click's admin. */
@@ -292,8 +379,35 @@ async function issueMemberToken(env: Env, input: {
 
 export async function deleteClick(env: Env, props: ClickProps): Promise<{ deleted: true; click_id: string }> {
   if (props.role !== "admin" && props.role !== "operator") throw new ClickError("Only a click admin can do that.");
-  await getDirectory(env).revokeClick(props.clickId);
+  await purgeClick(env, props.clickId);
   return { deleted: true, click_id: props.clickId };
+}
+
+/**
+ * Delete a click for good: its mailbox, agents, invites and tokens, its Directory rows and
+ * memberships, and the OAuth grants of identities that lived only in it.
+ */
+export async function purgeClick(env: Env, clickId: string): Promise<{ click_id: string; grants_revoked: number }> {
+  const hub = getHub(env, clickId);
+  const principals = await hub.principalIds();
+  const orphans = await getDirectory(env).purgeClick(clickId, principals);
+  await hub.purge();
+  let grantsRevoked = 0;
+  if (orphans.length > 0 && env.OAUTH_KV) {
+    const api = getOAuthApi(providerOptions(PRODUCTION_ORIGIN), env);
+    for (const userId of orphans) {
+      let cursor: string | undefined;
+      do {
+        const page = await api.listUserGrants(userId, cursor ? { cursor } : undefined);
+        for (const grant of page.items) {
+          await api.revokeGrant(grant.id, userId);
+          grantsRevoked += 1;
+        }
+        cursor = page.cursor;
+      } while (cursor);
+    }
+  }
+  return { click_id: clickId, grants_revoked: grantsRevoked };
 }
 
 export { cleanLabel };

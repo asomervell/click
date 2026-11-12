@@ -1,5 +1,10 @@
 export const PRODUCTION_ORIGIN = "https://clickmcp.com";
 
+/** The line a person pastes into another agent so it joins a click with an invite. */
+export function inviteLine(invite: string, origin: string = PRODUCTION_ORIGIN): string {
+  return `Connect to Click at ${origin}/mcp and join with invite ${invite}`;
+}
+
 export type Role = "admin" | "member" | "operator";
 
 export type ClickProps = {

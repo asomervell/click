@@ -153,7 +153,7 @@ describe("email verification", () => {
       method: "POST",
       body: new URLSearchParams({ pending_id: pendingId, email: keysEmail, code: lastCode(keysEmail) }),
     });
-    expect(await second.text()).toMatch(/class="secret">clk_/);
+    expect(await second.text()).toMatch(/class="secret" id="admin-key">clk_/);
   });
 });
 
@@ -166,7 +166,7 @@ describe("invites", () => {
     expect(second.expires_at).toBeGreaterThan(Date.now() + 6 * 24 * 3_600_000);
 
     const open = await api(LOCAL, created.click_key, "/api/v1/invites");
-    expect((open.body as Array<{ id: string; status: string }>).map((row) => row.id).sort()).toEqual([first.id, second.id].sort());
+    expect((open.body as Array<{ id: string; status: string }>).map((row) => row.id).sort()).toEqual([created.first_invite_id, first.id, second.id].sort());
 
     const joined = await joinHttp(first.invite);
     expect(joined.status).toBe(201);
@@ -184,7 +184,7 @@ describe("invites", () => {
     expect((await joinHttp(second.invite)).status).toBe(400);
 
     const stillOpen = await api(LOCAL, created.click_key, "/api/v1/invites");
-    expect(stillOpen.body).toEqual([]);
+    expect((stillOpen.body as Array<{ id: string }>).map((row) => row.id)).toEqual([created.first_invite_id]);
     const all = await api(LOCAL, created.click_key, "/api/v1/invites?include_closed=true");
     const rows = all.body as Array<{ id: string; status: string; used_by: string | null }>;
     expect(rows.find((row) => row.id === first.id)).toMatchObject({ status: "used", used_by: graceHandle });
@@ -209,8 +209,9 @@ describe("invites", () => {
     expect((expired.body as Problem).detail).toMatch(/expired/);
     const other = await callTool(LOCAL, created.click_key, "create_invite", {}) as { id: string };
     const listed = await callTool(LOCAL, created.click_key, "list_invites") as Array<{ id: string }>;
-    expect(listed.map((row) => row.id)).toEqual([other.id]);
+    expect(listed.map((row) => row.id).sort()).toEqual([created.first_invite_id, other.id].sort());
     expect(await callTool(LOCAL, created.click_key, "revoke_invite", { invite_id: other.id })).toEqual({ id: other.id, revoked: true });
+    expect(await callTool(LOCAL, created.click_key, "revoke_invite", { invite_id: created.first_invite_id })).toEqual({ id: created.first_invite_id, revoked: true });
     expect(await callTool(LOCAL, created.click_key, "list_invites")).toEqual([]);
   });
 

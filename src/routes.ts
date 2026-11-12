@@ -3,6 +3,7 @@ import { loadIdentity } from "./clicks";
 import { handleSite } from "./site";
 import { handleHttpApi } from "./http-api";
 import { handleKeys } from "./keys";
+import { handleDoorbell } from "./doorbell";
 import { mcpResponse } from "./mcp";
 import { htmlResponse, page } from "./pages";
 import type { ClickProps, Role } from "./types";
@@ -20,6 +21,7 @@ export async function defaultFetch(request: Request, env: Env, ctx: ExecutionCon
   const url = new URL(request.url);
   if (url.pathname === "/authorize") return handleAuthorize(request, env);
   if (url.pathname === "/keys") return handleKeys(request, env);
+  if (url.pathname === "/doorbell") return handleDoorbell(request, env);
   if (url.pathname === "/health") return Response.json({ ok: true });
   if (url.pathname === "/poppy/conversations") return poppyConversation(request, url.origin);
   const api = await handleHttpApi(request, env, ctx);

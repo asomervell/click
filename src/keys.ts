@@ -1,10 +1,17 @@
-import { joinWithInviteToken, startCreateClick, verifyCreateClick } from "./clicks";
+import { type ClickHandoff, joinWithInviteToken, startCreateClick, verifyCreateClick } from "./clicks";
 import { ClickError } from "./types";
-import { escapeHtml, htmlResponse, page } from "./pages";
+import { escapeHtml, handoffHtml, htmlResponse, page } from "./pages";
 
-function keyPage(clickKey: string, clickId: string, verified: boolean): Response {
-  const note = verified ? "" : `<p class="muted">This server is not verifying emails yet.</p>`;
-  return htmlResponse(page("Click key", `<h1>Click key</h1><p>This is the admin credential for your click. Keep it private. To add an agent, create an invite (create_invite or POST /api/v1/invites) and give them that instead.</p><p class="secret">${escapeHtml(clickKey)}</p><p>Click id <code>${escapeHtml(clickId)}</code></p>${note}`), 200);
+function keyPage(created: ClickHandoff): Response {
+  const note = created.email_verified ? "" : `<p class="muted">This server is not verifying emails yet.</p>`;
+  return htmlResponse(page("Your click is ready", handoffHtml({
+    clickKey: created.click_key,
+    clickId: created.click_id,
+    name: created.name,
+    inviteLine: created.first_invite.paste_line,
+    inviteExpiresAt: created.first_invite.expires_at,
+    notice: created.admin_key.notice,
+  }) + note), 200);
 }
 
 function codePage(pendingId: string, email: string, message: string | null): Response {
@@ -42,16 +49,16 @@ export async function handleKeys(request: Request, env: Env): Promise<Response> 
   try {
     if (pendingId) {
       try {
-        const created = await verifyCreateClick(env, pendingId, String(form.get("code") ?? ""));
-        return keyPage(created.click_key, created.click_id, true);
+        const created = await verifyCreateClick(env, pendingId, String(form.get("code") ?? ""), new URL(request.url).origin);
+        return keyPage(created);
       } catch (error) {
         return codePage(pendingId, email, error instanceof Error ? error.message : "Could not verify.");
       }
     }
     if (email) {
-      const started = await startCreateClick(env, { email, name: form.get("name"), request, accountId: null });
+      const started = await startCreateClick(env, { email, name: form.get("name"), request, accountId: null, origin: new URL(request.url).origin });
       if (started.status === "verification_sent") return codePage(started.pending_id, started.email, null);
-      return keyPage(started.click_key, started.click_id, false);
+      return keyPage(started);
     }
     if (!invite.startsWith("clk_inv_")) throw new ClickError("Ask the click admin for an invite. The click key is not used to join.");
     const joined = await joinWithInviteToken(env, invite, null);

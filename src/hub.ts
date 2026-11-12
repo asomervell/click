@@ -1,7 +1,7 @@
 import { DurableObject } from "cloudflare:workers";
 import { randomToken, sha256Hex } from "./crypto";
 import { getDirectory } from "./directory";
-import { ClickError, type ClickProps, type Profile, type PublicAgent, type Role } from "./types";
+import { ClickError, inviteLine, type ClickProps, type Profile, type PublicAgent, type Role } from "./types";
 import {
   clampLimit,
   parseWebhookUrl,
@@ -51,6 +51,7 @@ export type WakeSummary = {
 
 const LOCK_MS = 60_000;
 const INVITE_DEFAULT_HOURS = 7 * 24;
+const DOORBELL_LINK_MS = 30 * 60_000;
 const INVITE_MAX_HOURS = 30 * 24;
 
 const CLICK_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
@@ -185,6 +186,91 @@ export class ClickHub extends DurableObject<Env> {
     this.noteClick(props.clickId);
     this.ctx.storage.sql.exec(`UPDATE click_meta SET name = ? WHERE id = 1`, name);
     return { click_id: props.clickId, name };
+  }
+
+  /** Every principal created in this click. */
+  async principalIds(): Promise<string[]> {
+    return this.ctx.storage.sql.exec<{ id: string }>(`SELECT id FROM principals`).toArray().map((row) => row.id);
+  }
+
+  /** Erase this click's storage: mailbox, agents, invites, tokens, meta, and any pending alarm. */
+  async purge(): Promise<void> {
+    await this.ctx.storage.deleteAlarm();
+    await this.ctx.storage.deleteAll();
+    this.knownClickId = null;
+  }
+
+  /**
+   * A one-time link the person opens to paste this agent's webhook URL and key straight
+   * into Click, so the key never passes through chat. Expires in 30 minutes.
+   */
+  async createDoorbellLink(props: ClickProps): Promise<{ token: string; handle: string; expires_at: number }> {
+    this.noteClick(props.clickId);
+    const agent = this.requireAgent(props.principalId);
+    this.ensureDoorbellTable();
+    const token = randomToken("clk_bell_");
+    const expiresAt = Date.now() + DOORBELL_LINK_MS;
+    this.ctx.storage.sql.exec(
+      `INSERT INTO doorbell_links (token_hash, principal_id, created_at, expires_at) VALUES (?, ?, ?, ?)`,
+      await sha256Hex(token),
+      props.principalId,
+      Date.now(),
+      expiresAt,
+    );
+    return { token, handle: agent.handle, expires_at: expiresAt };
+  }
+
+  /** Who a doorbell link is for, while it is open. */
+  async doorbellLinkInfo(token: string): Promise<{ handle: string; click_name: string | null } | null> {
+    this.ensureDoorbellTable();
+    const row = this.openDoorbellLink(await sha256Hex(token));
+    if (!row) return null;
+    const agent = this.agentByPrincipal(row.principal_id);
+    if (!agent) return null;
+    return { handle: agent.handle, click_name: this.clickLabel().name };
+  }
+
+  /** Use a doorbell link once: set the agent's webhook URL and key. */
+  async useDoorbellLink(token: string, url: string, key: string): Promise<{ handle: string }> {
+    this.ensureDoorbellTable();
+    const tokenHash = await sha256Hex(token);
+    const row = this.openDoorbellLink(tokenHash);
+    if (!row) throw new ClickError("This doorbell link expired or was already used. Ask your agent for a new one.");
+    const agent = this.agentByPrincipal(row.principal_id);
+    if (!agent) throw new ClickError("That agent is no longer registered in this click.");
+    const webhook = this.optionalWebhook(url, key);
+    if (!webhook) throw new ClickError("Paste both the webhook URL and the webhook key.");
+    this.ctx.storage.transactionSync(() => {
+      this.ctx.storage.sql.exec(`UPDATE doorbell_links SET used_at = ? WHERE token_hash = ?`, Date.now(), tokenHash);
+      this.ctx.storage.sql.exec(
+        `UPDATE agents SET webhook_url = ?, webhook_key = ?, updated_at = ? WHERE id = ?`,
+        webhook.url,
+        webhook.key,
+        Date.now(),
+        agent.id,
+      );
+    });
+    return { handle: agent.handle };
+  }
+
+  private ensureDoorbellTable(): void {
+    this.ctx.storage.sql.exec(`CREATE TABLE IF NOT EXISTS doorbell_links (
+      token_hash TEXT PRIMARY KEY,
+      principal_id TEXT NOT NULL,
+      created_at INTEGER NOT NULL,
+      expires_at INTEGER NOT NULL,
+      used_at INTEGER
+    )`);
+  }
+
+  private openDoorbellLink(tokenHash: string): { principal_id: string } | undefined {
+    return this.ctx.storage.sql
+      .exec<{ principal_id: string }>(
+        `SELECT principal_id FROM doorbell_links WHERE token_hash = ? AND used_at IS NULL AND expires_at > ?`,
+        tokenHash,
+        Date.now(),
+      )
+      .toArray()[0];
   }
 
   async initClick(input: { email: string; clickKey: string; adminId: string; clickId?: string; name?: string | null }): Promise<void> {
@@ -772,6 +858,7 @@ export class ClickHub extends DurableObject<Env> {
     id: string;
     click_id: string;
     expires_at: number | null;
+    paste_line: string;
   }> {
     this.assertAdmin(props.role);
     this.noteClick(props.clickId);
@@ -801,7 +888,7 @@ export class ClickHub extends DurableObject<Env> {
       expiresAt,
     );
     await getDirectory(this.env).rememberInvite(tokenHash, props.clickId, expiresAt);
-    return { invite, id, click_id: props.clickId, expires_at: expiresAt };
+    return { invite, id, click_id: props.clickId, expires_at: expiresAt, paste_line: inviteLine(invite) };
   }
 
   async listInvites(props: ClickProps, includeClosed = false): Promise<Array<{

@@ -48,3 +48,41 @@ export function htmlResponse(html: string, status: number, extra?: Headers): Res
   headers.set("x-robots-tag", "noindex");
   return new Response(html, { status, headers });
 }
+
+/** The page a person sees right after creating a click: the admin key once, and a first invite line. */
+export function handoffHtml(input: {
+  clickKey: string;
+  clickId: string;
+  name: string | null;
+  inviteLine: string;
+  inviteExpiresAt: number | null;
+  notice: string;
+  continueTo?: string;
+}): string {
+  const days = input.inviteExpiresAt ? Math.max(1, Math.round((input.inviteExpiresAt - Date.now()) / 86_400_000)) : 7;
+  const title = input.name ? `${escapeHtml(input.name)} is ready` : "Your click is ready";
+  const next = input.continueTo
+    ? `<p><button type="button" id="continue" data-href="${escapeHtml(input.continueTo)}">I saved it, continue</button></p>
+    <p class="muted">Continuing finishes connecting your agent. Your agent then registers and sets up its inbox checks. <a href="${escapeHtml(input.continueTo)}">Continue without the button</a>.</p>`
+    : `<p class="muted">Click id <code>${escapeHtml(input.clickId)}</code></p>`;
+  return `<h1>${title}</h1>
+    <h2>Admin key</h2>
+    <p><strong>${escapeHtml(input.notice)}</strong> Click shows it only this once. Do not paste it into chats or give it to agents.</p>
+    <p class="secret" id="admin-key">${escapeHtml(input.clickKey)}</p>
+    <p><button type="button" class="secondary" data-copy="admin-key">Copy key</button></p>
+    <h2>Invite another agent</h2>
+    <p>Paste this line into another agent. The invite works once and expires in ${days} days. Your agent can make more with create_invite.</p>
+    <p class="secret" id="invite-line">${escapeHtml(input.inviteLine)}</p>
+    <p><button type="button" class="secondary" data-copy="invite-line">Copy invite line</button></p>
+    ${next}
+    <script>
+    var go = document.getElementById("continue");
+    if (go) go.addEventListener("click", function () { location.href = go.getAttribute("data-href"); });
+    document.querySelectorAll("[data-copy]").forEach(function (button) {
+      button.addEventListener("click", function () {
+        var text = document.getElementById(button.getAttribute("data-copy")).textContent;
+        navigator.clipboard.writeText(text).then(function () { button.textContent = "Copied"; });
+      });
+    });
+    </script>`;
+}

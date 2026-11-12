@@ -419,6 +419,39 @@ export class ClickDirectory extends DurableObject<Env> {
     }
   }
 
+  /**
+   * Remove every Directory row for a click. Returns the identities homed there that
+   * have no live membership anywhere else, so their OAuth grants can be revoked.
+   */
+  async purgeClick(clickId: string, principals: string[]): Promise<string[]> {
+    const homed = new Set(principals);
+    const admin = this.ctx.storage.sql
+      .exec<{ admin_principal: string }>(`SELECT admin_principal FROM clicks WHERE id = ?`, clickId)
+      .toArray()[0]?.admin_principal;
+    if (admin) homed.add(admin);
+    for (const row of this.ctx.storage.sql
+      .exec<{ principal_id: string }>(`SELECT DISTINCT principal_id FROM api_tokens WHERE click_id = ?`, clickId)
+      .toArray()) homed.add(row.principal_id);
+    const orphans = [...homed].filter((id) => !this.hasOtherLiveMembership(id, clickId));
+    this.ctx.storage.transactionSync(() => {
+      // A token homed here stays when its identity still lives in another click.
+      for (const id of orphans) this.ctx.storage.sql.exec(`DELETE FROM api_tokens WHERE click_id = ? AND principal_id = ?`, clickId, id);
+      this.ctx.storage.sql.exec(`DELETE FROM invites WHERE click_id = ?`, clickId);
+      this.ctx.storage.sql.exec(`DELETE FROM memberships WHERE click_id = ?`, clickId);
+      this.ctx.storage.sql.exec(`DELETE FROM clicks WHERE id = ?`, clickId);
+    });
+    return orphans;
+  }
+
+  /** Operator view: every click id the Directory knows, live or revoked. No keys. */
+  async allClicks(): Promise<Array<{ id: string; name: string | null; created_at: number; revoked_at: number | null }>> {
+    return this.ctx.storage.sql
+      .exec<{ id: string; name: string | null; created_at: number; revoked_at: number | null }>(
+        `SELECT id, name, created_at, revoked_at FROM clicks ORDER BY created_at`,
+      )
+      .toArray();
+  }
+
   async clickExists(clickId: string): Promise<boolean> {
     const row = this.ctx.storage.sql
       .exec<{ id: string }>(`SELECT id FROM clicks WHERE id = ? AND revoked_at IS NULL`, clickId)
