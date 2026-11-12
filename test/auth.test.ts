@@ -87,7 +87,7 @@ describe("auth", () => {
     expect(page.headers.get("link") ?? "").toContain("api-catalog");
     const markdown = await SELF.fetch(`${LOCAL}/`, { headers: { accept: "text/markdown", host: "127.0.0.1:8787" } });
     expect(markdown.headers.get("content-type")).toContain("text/markdown");
-    expect(await markdown.text()).toContain("click key");
+    expect(await markdown.text()).toContain("admin key");
     const robots = await SELF.fetch(`${LOCAL}/robots.txt`);
     expect(await robots.text()).toContain("Content-Signal:");
     expect(html).toContain("<h1");

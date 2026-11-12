@@ -1,5 +1,6 @@
 import {
   deleteClick,
+  purgeClick,
   type Identity,
   joinWithInvite,
   joinWithInviteToken,
@@ -12,6 +13,9 @@ import {
   startCreateClick,
   verifyCreateClick,
 } from "./clicks";
+import { ownerKeyMatches } from "./crypto";
+import { getDirectory } from "./directory";
+import { doorbellLink } from "./doorbell";
 import { getHub } from "./hub";
 import { ackAcross, historyAcross, inboxAcross, routeSend } from "./routing";
 import { ClickError } from "./types";
@@ -29,12 +33,12 @@ export async function handleHttpApi(request: Request, env: Env, ctx: ExecutionCo
       const body = await readJson(request);
       // A signed-in agent that creates a click gets it added to its own memberships.
       const accountId = home && home.role !== "operator" ? home.principalId : null;
-      const started = await startCreateClick(env, { email: String(body.email ?? ""), name: body.name, request, accountId });
+      const started = await startCreateClick(env, { email: String(body.email ?? ""), name: body.name, request, accountId, origin: url.origin });
       return json(started, started.status === "created" ? 201 : 202);
     }
     if (request.method === "POST" && path === "/api/clicks/verify") {
       const body = await readJson(request);
-      return json(await verifyCreateClick(env, String(body.pending_id ?? ""), String(body.code ?? "")), 201);
+      return json(await verifyCreateClick(env, String(body.pending_id ?? ""), String(body.code ?? ""), url.origin), 201);
     }
     if (request.method === "POST" && path === "/api/clicks/join") {
       const body = await readJson(request);
@@ -50,6 +54,28 @@ export async function handleHttpApi(request: Request, env: Env, ctx: ExecutionCo
       }
       const joined = await joinWithInviteToken(env, String(body.invite ?? ""), label);
       return json({ token: joined.token, click_id: joined.clickId, name: joined.clickName, principal_id: joined.principalId, role: joined.role }, 201);
+    }
+    if (path.startsWith("/api/operator/")) {
+      // Operator maintenance, only when the deployer set OWNER_KEY_HASH. No click id needed.
+      if (!token || !(await ownerKeyMatches(token, env.OWNER_KEY_HASH))) return problem(401, "Unauthorized", "unauthorized");
+      if (request.method === "GET" && path === "/api/operator/clicks") {
+        const clicks = await getDirectory(env).allClicks();
+        return json({ count: clicks.length, live: clicks.filter((c) => c.revoked_at == null).length, clicks }, 200);
+      }
+      if (request.method === "POST" && path === "/api/operator/purge") {
+        const body = await readJson(request);
+        const objectId = String(body.object_id ?? "");
+        if (objectId) {
+          // A hub left behind with no Directory row: erase it by its Durable Object id.
+          if (!/^[0-9a-f]{64}$/.test(objectId)) throw new ClickError("object_id must be a Durable Object id.");
+          await env.CLICK.get(env.CLICK.idFromString(objectId)).purge();
+          return json({ object_id: objectId, purged: true }, 200);
+        }
+        const clickId = String(body.click_id ?? "");
+        if (!clickId) throw new ClickError("Send click_id or object_id.");
+        return json(await purgeClick(env, clickId), 200);
+      }
+      throw new ClickError("Unknown API route.");
     }
     if (!home) return problem(401, "Unauthorized", "unauthorized");
     const identity = await loadIdentity(env, home);
@@ -177,6 +203,7 @@ async function dispatch(
   if (request.method === "DELETE" && path.startsWith("/api/agents/")) {
     return hub.removeMember(props, decodeURIComponent(path.slice("/api/agents/".length)));
   }
+  if (request.method === "POST" && path === "/api/doorbell-link") return doorbellLink(env, props, url.origin);
   if (request.method === "GET" && path === "/api/key") return hub.showKey(props);
   if (request.method === "POST" && path === "/api/key/rotate") return rotateClickKey(env, props);
   if (request.method === "GET" && path === "/api/members") return hub.listMembers();
