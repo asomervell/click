@@ -17,6 +17,7 @@ import { acceptAdd, accountStatus, addMember, approveJoin, claimHandle, declineJ
 import { doorbellLink } from "./doorbell";
 import { handleEventsRpc, isEventsMethod, withEventsCapability } from "./events";
 import { getHub } from "./hub";
+import { forgetIdentities } from "./identity-cache";
 import { LIVE_MESSAGING, ROUTINE_PROMPT } from "./routine";
 import { ackAcross, historyAcross, inboxAcross, routeSend, waitAcross } from "./routing";
 import { ADDING_AGENTS, ClickError, CREDENTIALS_BLOCK } from "./types";
@@ -46,8 +47,12 @@ function register(
     },
     async (args) => {
       try {
-        return jsonResult(await fn(args));
+        const result = await fn(args);
+        // A tool that writes may have changed memberships (join, leave, remove, rename, create).
+        if (!readOnly) forgetIdentities();
+        return jsonResult(result);
       } catch (error) {
+        if (!readOnly) forgetIdentities();
         const message = error instanceof Error ? error.message : "";
         // Durable Object RPC drops the ClickError class, so the message is the signal.
         const internal = !message || /sql|sqlite|durable object|internal error/i.test(message);

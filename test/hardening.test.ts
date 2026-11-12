@@ -87,3 +87,47 @@ describe("per-isolate caches", () => {
     expect(md.headers.get("content-type")).toContain("text/markdown");
   });
 });
+
+describe("identity lookups", () => {
+  it("keeps the identity memo honest: TTL, copies, and clear", async () => {
+    const { cachedIdentity, rememberIdentity, forgetIdentities, IDENTITY_TTL_MS } = await import("../src/identity-cache");
+    const home = { principalId: "p1", clickId: "c1", role: "member" as const };
+    const identity = { accountId: "p1", operator: false, memberships: [{ accountId: "p1", clickId: "c1", principalId: "p1", role: "member" as const, name: null, home: true }] };
+    rememberIdentity(home, identity, 1_000);
+    const hit = cachedIdentity(home, 1_000 + IDENTITY_TTL_MS - 1);
+    expect(hit).toEqual(identity);
+    hit!.memberships.length = 0;
+    expect(cachedIdentity(home, 1_001)?.memberships).toHaveLength(1);
+    expect(cachedIdentity(home, 1_000 + IDENTITY_TTL_MS + 1)).toBeNull();
+    rememberIdentity(home, identity, 2_000);
+    forgetIdentities();
+    expect(cachedIdentity(home, 2_001)).toBeNull();
+    rememberIdentity(home, identity, 3_000);
+    rememberIdentity(home, null, 3_001);
+    expect(cachedIdentity(home, 3_002)).toBeNull();
+  });
+
+  it("stops a revoked token at once, even right after it was used", async () => {
+    const click = await createClick();
+    const minted = (await api(ORIGIN, click.click_key, "/api/v1/tokens", { method: "POST", body: { handle: handle("rev") } })).body as { token: string; token_id: string };
+    expect((await api(ORIGIN, minted.token, "/api/v1/me")).status).toBe(200);
+    expect((await api(ORIGIN, minted.token, "/api/v1/me")).status).toBe(200);
+    expect((await api(ORIGIN, click.click_key, `/api/v1/tokens/${minted.token_id}`, { method: "DELETE" })).status).toBe(200);
+    expect((await api(ORIGIN, minted.token, "/api/v1/me")).status).toBe(401);
+  });
+
+  it("shows a join and a leave on the very next call", async () => {
+    const one = await createClick();
+    const two = await createClick();
+    const minted = (await api(ORIGIN, one.click_key, "/api/v1/tokens", { method: "POST", body: { handle: handle("mover") } })).body as { token: string };
+    const count = async () => ((await api(ORIGIN, minted.token, "/api/v1/clicks")).body as { clicks: unknown[] }).clicks.length;
+    expect(await count()).toBe(1);
+    const issued = (await api(ORIGIN, two.click_key, "/api/v1/invites", { method: "POST", body: {} })).body as { invite: string };
+    expect((await api(ORIGIN, minted.token, "/api/v1/clicks/join", { method: "POST", body: { invite: issued.invite } })).status).toBeLessThan(300);
+    expect(await count()).toBe(2);
+    await api(ORIGIN, minted.token, "/api/v1/agents", { method: "POST", body: { handle: handle("mover2") }, clickId: two.click_id });
+    const left = await api(ORIGIN, minted.token, "/api/v1/agents/me", { method: "DELETE", clickId: two.click_id });
+    expect(left.status).toBeLessThan(300);
+    expect(await count()).toBe(1);
+  });
+});

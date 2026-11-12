@@ -1,5 +1,6 @@
 import { ONBOARD_PROMPT } from "./routine";
 import { brandStylesheet } from "./brand";
+import { forgetIdentities } from "./identity-cache";
 import { createProvider } from "./provider";
 import { agentAuthMetadata, protectedResource } from "./site";
 import { PRODUCTION_ORIGIN } from "./types";
@@ -88,6 +89,10 @@ export default {
     if (path === "/register" && request.method === "GET") {
       return registerInfo(origin);
     }
+    // Writes outside /mcp (sign-in, joins, the REST API) can change memberships, so this
+    // isolate's identity memo starts and ends them fresh. MCP tools clear it per tool.
+    const writes = request.method !== "GET" && request.method !== "HEAD" && request.method !== "OPTIONS" && path !== "/mcp";
+    if (writes) forgetIdentities();
     try {
       let response = await createProvider(origin).fetch(request, env, ctx);
       if (path === "/.well-known/openid-configuration" && response.status === 404) {
@@ -106,6 +111,8 @@ export default {
         error: error instanceof Error ? error.message : "error",
       }));
       return new Response("Click failed", { status: 500 });
+    } finally {
+      if (writes) forgetIdentities();
     }
   },
   async scheduled(_controller: ScheduledController, env: Env, ctx: ExecutionContext): Promise<void> {

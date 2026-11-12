@@ -1,6 +1,6 @@
 import { DurableObject } from "cloudflare:workers";
 import { randomToken, sha256Hex } from "./crypto";
-import { ClickError, type Membership, type Role } from "./types";
+import { ClickError, type ClickProps, type Identity, type Membership, type Role } from "./types";
 
 const EMAIL = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const WINDOW_MS = 10 * 60 * 1000;
@@ -512,6 +512,42 @@ export class ClickDirectory extends DurableObject<Env> {
       this.insertMembership(pending.account_id, created.clickId, created.adminId, "admin");
     }
     return { ...created, email: pending.email, name: pending.name, accountId: pending.account_id };
+  }
+
+  /**
+   * Everything a credential can reach, in one call: the worker used to make two or three
+   * (key lookup, account, memberships) before every request.
+   */
+  async identity(home: ClickProps): Promise<Identity | null> {
+    if (home.role === "operator") {
+      if (!(await this.clickExists(home.clickId))) return null;
+      return {
+        accountId: "operator",
+        operator: true,
+        memberships: [{
+          accountId: "operator",
+          clickId: home.clickId,
+          principalId: "operator",
+          role: "operator",
+          name: await this.clickName(home.clickId),
+          home: true,
+        }],
+      };
+    }
+    if (home.clickId === LOBBY) {
+      if (!(await this.account(home.principalId))) return null;
+      return { accountId: home.principalId, operator: false, memberships: await this.memberships(home as ResolvedCredential), standalone: true };
+    }
+    const memberships = await this.memberships(home as ResolvedCredential);
+    if (memberships.length === 0) return null;
+    return { accountId: home.principalId, operator: false, memberships };
+  }
+
+  /** A bearer's key hash to its home props and identity, in one round trip. */
+  async resolveIdentity(keyHash: string): Promise<{ props: ResolvedCredential; identity: Identity | null } | null> {
+    const props = await this.resolveKeyHash(keyHash);
+    if (!props) return null;
+    return { props, identity: await this.identity(props) };
   }
 
   async resolveKeyHash(keyHash: string): Promise<ResolvedCredential | null> {

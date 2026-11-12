@@ -23,6 +23,15 @@ export type Membership = {
   home: boolean;
 };
 
+/** Everything one credential can reach. accountId is the home principal id. */
+export type Identity = {
+  accountId: string;
+  operator: boolean;
+  memberships: Membership[];
+  /** True for an agent that signed up on its own (no invite); it may be in no click yet. */
+  standalone?: boolean;
+};
+
 export class ClickError extends Error {
   constructor(message: string) {
     super(message);
