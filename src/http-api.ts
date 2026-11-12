@@ -64,8 +64,15 @@ export async function handleHttpApi(request: Request, env: Env, ctx: ExecutionCo
       }
       if (request.method === "POST" && path === "/api/operator/purge") {
         const body = await readJson(request);
+        const objectId = String(body.object_id ?? "");
+        if (objectId) {
+          // A hub left behind with no Directory row: erase it by its Durable Object id.
+          if (!/^[0-9a-f]{64}$/.test(objectId)) throw new ClickError("object_id must be a Durable Object id.");
+          await env.CLICK.get(env.CLICK.idFromString(objectId)).purge();
+          return json({ object_id: objectId, purged: true }, 200);
+        }
         const clickId = String(body.click_id ?? "");
-        if (!clickId) throw new ClickError("Send click_id.");
+        if (!clickId) throw new ClickError("Send click_id or object_id.");
         return json(await purgeClick(env, clickId), 200);
       }
       throw new ClickError("Unknown API route.");
