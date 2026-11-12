@@ -163,6 +163,15 @@ export class ClickDirectory extends DurableObject<Env> {
         PRIMARY KEY (click_id, account_id)
       );
       CREATE INDEX IF NOT EXISTS join_offers_account ON join_offers (account_id);
+      CREATE TABLE IF NOT EXISTS handle_holds (
+        handle TEXT PRIMARY KEY,
+        account_id TEXT NOT NULL,
+        until INTEGER NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS handle_renames (
+        account_id TEXT NOT NULL,
+        at INTEGER NOT NULL
+      );
       CREATE TABLE IF NOT EXISTS account_log (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         ip_hash TEXT NOT NULL,
@@ -196,31 +205,101 @@ export class ClickDirectory extends DurableObject<Env> {
     return this.ctx.storage.sql.exec<AccountRow>(`SELECT * FROM accounts WHERE handle = ?`, handle).toArray()[0] ?? null;
   }
 
-  /**
-   * Claim a global handle: the base the agent chose plus a short random suffix, so a
-   * handle cannot be guessed or squatted ahead of time. Opens a 24-hour window in which
-   * an admin's add_member goes straight through.
-   */
-  async claimHandle(accountId: string, base: string, profile: { name: string | null; description: string | null }): Promise<AccountRow> {
+  private globalHandleTaken(handle: string, selfId: string): boolean {
+    const owner = this.ctx.storage.sql.exec<{ id: string }>(`SELECT id FROM accounts WHERE handle = ?`, handle).toArray()[0];
+    if (owner && owner.id !== selfId) return true;
+    const hold = this.ctx.storage.sql
+      .exec<{ account_id: string }>(`SELECT account_id FROM handle_holds WHERE handle = ? AND until > ?`, handle, Date.now())
+      .toArray()[0];
+    return Boolean(hold && hold.account_id !== selfId);
+  }
+
+  /** The plain name if it is free, else name-2 ... name-9, else name plus two random characters. */
+  private freeHandle(base: string, selfId: string): string {
+    const trimmed = base.slice(0, 29).replace(/-+$/, "") || "agent";
+    if (!this.globalHandleTaken(trimmed, selfId)) return trimmed;
+    for (let n = 2; n <= 9; n++) {
+      const candidate = `${trimmed}-${n}`;
+      if (!this.globalHandleTaken(candidate, selfId)) return candidate;
+    }
+    for (let attempt = 0; attempt < 20; attempt++) {
+      const suffix = [...crypto.getRandomValues(new Uint8Array(2))].map((b) => "abcdefghjkmnpqrstuvwxyz23456789"[b % 31]).join("");
+      const candidate = `${trimmed}-${suffix}`;
+      if (!this.globalHandleTaken(candidate, selfId)) return candidate;
+    }
+    throw new ClickError("Could not find a free handle. Try another name.");
+  }
+
+  /** Claim a global handle: the plain name the agent chose, with a short suffix only if it is taken. */
+  async claimHandle(accountId: string, base: string, profile: { name: string | null; description: string | null }): Promise<AccountRow & { requested: string }> {
     const existing = await this.account(accountId);
     if (!existing) throw new ClickError("This connection has no Click identity.");
     if (existing.handle) {
       this.ctx.storage.sql.exec(`UPDATE accounts SET name = COALESCE(?, name), description = COALESCE(?, description) WHERE id = ?`, profile.name, profile.description, accountId);
-      return (await this.account(accountId))!;
+      return { ...(await this.account(accountId))!, requested: base };
     }
-    const trimmed = base.slice(0, 27).replace(/-+$/, "") || "agent";
-    for (let attempt = 0; attempt < 8; attempt++) {
-      const suffix = [...crypto.getRandomValues(new Uint8Array(4))].map((b) => "abcdefghjkmnpqrstuvwxyz23456789"[b % 31]).join("");
-      const handle = `${trimmed}-${suffix}`;
-      const taken = this.ctx.storage.sql.exec<{ id: string }>(`SELECT id FROM accounts WHERE handle = ?`, handle).toArray()[0];
-      if (taken) continue;
-      this.ctx.storage.sql.exec(
-        `UPDATE accounts SET handle = ?, name = ?, description = ?, looking_until = ? WHERE id = ?`,
-        handle, profile.name, profile.description, Date.now() + LOOKING_MS, accountId,
-      );
-      return (await this.account(accountId))!;
-    }
-    throw new ClickError("Could not pick a handle. Try again.");
+    const handle = this.freeHandle(base, accountId);
+    this.ctx.storage.sql.exec(`UPDATE accounts SET handle = ?, name = ?, description = ? WHERE id = ?`, handle, profile.name, profile.description, accountId);
+    return { ...(await this.account(accountId))!, requested: base };
+  }
+
+  /** Can this account take this exact global handle? */
+  async globalHandleFree(accountId: string, handle: string): Promise<boolean> {
+    return !this.globalHandleTaken(handle, accountId);
+  }
+
+  /** Rename a global handle: 3 a day, and the old one is held for this account for 7 days. */
+  async renameAccount(accountId: string, handle: string): Promise<{ old_handle: string | null; handle: string }> {
+    const account = await this.account(accountId);
+    if (!account) throw new ClickError("This connection has no Click identity.");
+    if (account.handle === handle) return { old_handle: handle, handle };
+    if (this.globalHandleTaken(handle, accountId)) throw new ClickError(`The handle ${handle} is taken. Pick another.`);
+    const now = Date.now();
+    const recent = this.ctx.storage.sql
+      .exec<{ n: number }>(`SELECT COUNT(*) AS n FROM handle_renames WHERE account_id = ? AND at > ?`, accountId, now - 24 * HOUR_MS)
+      .one().n;
+    if (recent >= 3) throw new ClickError("Too many renames: at most 3 a day. Try again tomorrow.");
+    this.ctx.storage.transactionSync(() => {
+      this.ctx.storage.sql.exec(`UPDATE accounts SET handle = ?, name = CASE WHEN name IS NULL OR name = ? THEN ? ELSE name END WHERE id = ?`, handle, account.handle, handle, accountId);
+      this.ctx.storage.sql.exec(`DELETE FROM handle_holds WHERE handle = ?`, handle);
+      if (account.handle) {
+        this.ctx.storage.sql.exec(
+          `INSERT INTO handle_holds (handle, account_id, until) VALUES (?, ?, ?) ON CONFLICT (handle) DO UPDATE SET account_id = excluded.account_id, until = excluded.until`,
+          account.handle, accountId, now + 7 * 24 * HOUR_MS,
+        );
+      }
+      this.ctx.storage.sql.exec(`INSERT INTO handle_renames (account_id, at) VALUES (?, ?)`, accountId, now);
+    });
+    return { old_handle: account.handle, handle };
+  }
+
+  /** Live clicks with this exact name (case-insensitive), for request_join by name. */
+  async clicksNamed(name: string): Promise<Array<{ id: string; name: string | null }>> {
+    return this.ctx.storage.sql
+      .exec<{ id: string; name: string | null }>(`SELECT id, name FROM clicks WHERE revoked_at IS NULL AND lower(name) = lower(?) LIMIT 5`, name.trim())
+      .toArray();
+  }
+
+  /** Delete a standalone agent identity that is in no live click: tokens, offers, and holds. */
+  async purgeAccount(accountId: string): Promise<{ deleted: boolean; handle: string | null }> {
+    const account = await this.account(accountId);
+    if (!account) return { deleted: false, handle: null };
+    if ((await this.liveMembershipCount(accountId)) > 0) throw new ClickError("Leave every click first.");
+    this.ctx.storage.transactionSync(() => {
+      this.ctx.storage.sql.exec(`DELETE FROM api_tokens WHERE principal_id = ? AND click_id = 'lobby'`, accountId);
+      this.ctx.storage.sql.exec(`DELETE FROM join_offers WHERE account_id = ?`, accountId);
+      this.ctx.storage.sql.exec(`DELETE FROM handle_holds WHERE account_id = ?`, accountId);
+      this.ctx.storage.sql.exec(`DELETE FROM handle_renames WHERE account_id = ?`, accountId);
+      this.ctx.storage.sql.exec(`DELETE FROM memberships WHERE account_id = ?`, accountId);
+      this.ctx.storage.sql.exec(`DELETE FROM accounts WHERE id = ?`, accountId);
+    });
+    return { deleted: true, handle: account.handle };
+  }
+
+  /** Operator view of standalone agents: handle and live click count only. */
+  async allAccounts(): Promise<Array<{ id: string; handle: string | null; created_at: number; clicks: number }>> {
+    const rows = this.ctx.storage.sql.exec<{ id: string; handle: string | null; created_at: number }>(`SELECT id, handle, created_at FROM accounts ORDER BY created_at`).toArray();
+    return Promise.all(rows.map(async (row) => ({ ...row, clicks: await this.liveMembershipCount(row.id) })));
   }
 
   async setLooking(accountId: string, open: boolean): Promise<number | null> {

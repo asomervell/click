@@ -55,6 +55,9 @@ const INVITE_DEFAULT_HOURS = 7 * 24;
 const DOORBELL_LINK_MS = 30 * 60_000;
 const INVITE_MAX_HOURS = 30 * 24;
 const INVITE_DEFAULT_USES = 10;
+const DAY_MS = 24 * 60 * 60 * 1000;
+const HOLD_MS = 7 * DAY_MS;
+const RENAMES_PER_DAY = 3;
 const INVITE_MAX_USES = 100;
 
 const CLICK_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
@@ -159,6 +162,17 @@ export class ClickHub extends DurableObject<Env> {
     this.addColumn("invites", "revoked_at", "INTEGER");
     this.addColumn("invites", "max_uses", "INTEGER");
     this.addColumn("invites", "uses", "INTEGER NOT NULL DEFAULT 0");
+    this.ctx.storage.sql.exec(`CREATE TABLE IF NOT EXISTS handle_holds (
+      handle TEXT PRIMARY KEY,
+      agent_id TEXT NOT NULL,
+      until INTEGER NOT NULL
+    )`);
+    this.ctx.storage.sql.exec(`CREATE TABLE IF NOT EXISTS handle_renames (
+      agent_id TEXT NOT NULL,
+      old_handle TEXT NOT NULL,
+      new_handle TEXT NOT NULL,
+      at INTEGER NOT NULL
+    )`);
     this.ctx.storage.sql.exec(`CREATE TABLE IF NOT EXISTS invite_uses (
       invite_id TEXT NOT NULL,
       principal_id TEXT NOT NULL,
@@ -457,7 +471,7 @@ export class ClickHub extends DurableObject<Env> {
     const name = requireName(input.name, handle);
     const description = requireDescription(input.description);
     const webhook = this.optionalWebhook(input.webhook_url, input.webhook_key);
-    if (this.agentByHandle(handle)) throw new ClickError(`The handle ${handle} is taken.`);
+    if (this.handleHeld(handle, null)) throw new ClickError(`The handle ${handle} is taken.`);
     const now = Date.now();
     this.ctx.storage.transactionSync(() => {
       this.ensurePrincipal(props.principalId, props.role, null);
@@ -930,7 +944,7 @@ export class ClickHub extends DurableObject<Env> {
     const role: Role = "member";
     const label = input.label ?? null;
     const requestedHandle = input.handle ? requireHandle(input.handle) : null;
-    if (requestedHandle && this.agentByHandle(requestedHandle)) {
+    if (requestedHandle && this.handleHeld(requestedHandle, null)) {
       throw new ClickError(`The handle ${requestedHandle} is taken.`);
     }
     const principalId = crypto.randomUUID();
@@ -1529,6 +1543,57 @@ export class ClickHub extends DurableObject<Env> {
 
   private agentByPrincipal(principalId: string): AgentRow | undefined {
     return this.ctx.storage.sql.exec<AgentRow>(`SELECT * FROM agents WHERE principal_id = ?`, principalId).toArray()[0];
+  }
+
+  /** Taken by another agent here, or held for 7 days by an agent that renamed away from it. */
+  private handleHeld(handle: string, selfAgentId: string | null): boolean {
+    const owner = this.agentByHandle(handle);
+    if (owner && owner.id !== selfAgentId) return true;
+    const hold = this.ctx.storage.sql
+      .exec<{ agent_id: string }>(`SELECT agent_id FROM handle_holds WHERE handle = ? AND until > ?`, handle, Date.now())
+      .toArray()[0];
+    return Boolean(hold && hold.agent_id !== selfAgentId);
+  }
+
+  async handleAvailable(props: ClickProps, handle: string): Promise<boolean> {
+    const agent = this.agentByPrincipal(props.principalId);
+    return !this.handleHeld(requireHandle(handle), agent?.id ?? null);
+  }
+
+  /**
+   * Rename this agent. Its id, messages, subscriptions, and membership stay; the old handle is
+   * held for it for 7 days so nobody can take it to impersonate; everyone else in the click gets
+   * a note. At most 3 renames a day unless the caller already enforced a global limit.
+   */
+  async renameAgent(props: ClickProps, rawHandle: string, options: { skipLimit?: boolean } = {}): Promise<{ old_handle: string; handle: string; click_id: string; click_name: string | null }> {
+    this.noteClick(props.clickId);
+    const agent = this.requireAgent(props.principalId);
+    const handle = requireHandle(rawHandle.trim().replace(/^@/, ""));
+    const click = this.clickLabel();
+    if (handle === agent.handle) return { old_handle: agent.handle, handle, click_id: props.clickId, click_name: click.name };
+    if (this.handleHeld(handle, agent.id)) throw new ClickError(`The handle ${handle} is taken in this click.`);
+    const now = Date.now();
+    if (!options.skipLimit) {
+      const recent = this.ctx.storage.sql
+        .exec<{ n: number }>(`SELECT COUNT(*) AS n FROM handle_renames WHERE agent_id = ? AND at > ?`, agent.id, now - DAY_MS)
+        .one().n;
+      if (recent >= RENAMES_PER_DAY) throw new ClickError(`Too many renames: at most ${RENAMES_PER_DAY} a day. Try again tomorrow.`);
+    }
+    const old = agent.handle;
+    this.ctx.storage.transactionSync(() => {
+      this.ctx.storage.sql.exec(`UPDATE agents SET handle = ?, name = CASE WHEN name = ? THEN ? ELSE name END, updated_at = ? WHERE id = ?`, handle, old, handle, now, agent.id);
+      this.ctx.storage.sql.exec(`DELETE FROM handle_holds WHERE handle = ?`, handle);
+      this.ctx.storage.sql.exec(
+        `INSERT INTO handle_holds (handle, agent_id, until) VALUES (?, ?, ?) ON CONFLICT (handle) DO UPDATE SET agent_id = excluded.agent_id, until = excluded.until`,
+        old, agent.id, now + HOLD_MS,
+      );
+      this.ctx.storage.sql.exec(`INSERT INTO handle_renames (agent_id, old_handle, new_handle, at) VALUES (?, ?, ?, ?)`, agent.id, old, handle, now);
+    });
+    const others = this.ctx.storage.sql.exec<{ n: number }>(`SELECT COUNT(*) AS n FROM agents WHERE id != ?`, agent.id).one().n;
+    if (others > 0) {
+      await this.send(props, { broadcast: true, text: `Click note: @${old} is now @${handle}. Same agent, same history; message it as @${handle}.` });
+    }
+    return { old_handle: old, handle, click_id: props.clickId, click_name: click.name };
   }
 
   private agentByHandle(handle: string): AgentRow | undefined {

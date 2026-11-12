@@ -48,7 +48,12 @@ body{margin:0}
   .ck-landing .hero{min-height:100vh;min-height:100svh}
   .ck-landing .in{z-index:1;padding:var(--space-3)}
   .ck-landing .copy{padding:var(--space-5) 0}
-  .ck-landing .hero .scene{position:static;order:2;flex:0 0 auto;width:100%;height:auto;aspect-ratio:8/5;max-height:55vh;max-height:55svh;margin-top:-22vw}
+  /* The fire is big and rises up behind the copy box; the box sits above it on solid black so the line stays readable. */
+  .ck-landing .hero .scene{position:relative;z-index:0;order:2;flex:0 0 auto;width:100%;height:66vh;height:66svh;object-fit:cover;object-position:74% 100%;margin-top:-40vh;margin-top:-40svh}
+  .ck-landing .cmd{position:relative;z-index:2;background:var(--ground)}
+  /* COPY moves up into the tab row, top right, beside TELL YOUR AGENT. */
+  .ck-landing .cmd .tabs span{line-height:20px}
+  .ck-landing .cmd .cp{position:absolute;top:0;right:0;height:calc(20px + 2 * var(--space-2));line-height:20px;padding:0 var(--space-3);display:flex;align-items:center;background:transparent}
   .ck-landing h1{font-size:24px}
   .ck-landing .sub{font-size:15px;line-height:24px}
   .ck-landing .steps{grid-template-columns:1fr;padding:var(--space-5) var(--space-3);gap:var(--space-4)}
@@ -65,7 +70,7 @@ body{margin:0}
   .ck-landing .cmd .tabs span{font-size:13px;padding:var(--space-3) var(--space-4)}
   .ck-landing .cmd .line{flex-direction:column;gap:var(--space-2);font-size:17px;line-height:28px;padding:var(--space-4)}
   .ck-landing .cmd .line b{white-space:nowrap}
-  .ck-landing .cmd .cp{align-self:flex-end;font-size:13px;line-height:28px}
+  .ck-landing .cmd .cp{height:calc(20px + 2 * var(--space-3));font-size:13px;padding:0 var(--space-4)}
   .ck-landing .steps h2{font-size:20px}
   .ck-landing .steps p{font-size:17px;line-height:27px}
 }
@@ -115,3 +120,8 @@ body{margin:0}
 .ck-doc footer{margin-top:var(--space-6);padding-top:var(--space-3);border-top:var(--border-pixel) dotted var(--line);display:flex;flex-wrap:wrap;gap:var(--space-4)}
 .ck-doc footer a{color:var(--muted);text-decoration:none}
 @media (max-width:700px){.ck-page main{padding:var(--space-4)}.ck-doc h1{font-size:18px}}
+
+/* Connect page: the agent's handle, big. */
+.ck-page .handle-big{font-family:var(--font-display);font-size:22px;line-height:1.4;color:var(--magenta-text);word-break:break-all;margin:var(--space-3) 0 var(--space-4)}
+.ck-page a.button{display:inline-flex;align-items:center;font-family:var(--font-display);font-size:10px;line-height:1;letter-spacing:.5px;text-transform:uppercase;padding:14px var(--space-3);border:var(--border-pixel) solid var(--ink);background:var(--cyan);color:var(--on-cyan);box-shadow:var(--shadow-ink);text-decoration:none}
+.ck-page input.handle-input{font-size:17px!important;color:var(--magenta-text)!important}

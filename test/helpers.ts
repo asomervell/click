@@ -128,7 +128,9 @@ export async function createClick(origin = LOCAL, extra: Record<string, unknown>
   return { click_id: body.click_id, click_key: body.click_key, principal_id: body.principal_id, first_invite_id: String(body.first_invite?.id) };
 }
 
-export async function signIn(origin: string, input: { email?: string; key?: string; originHeader?: string | null }): Promise<string> {
+export let lastConnectPage = "";
+
+export async function signIn(origin: string, input: { email?: string; key?: string; originHeader?: string | null; agentHandle?: string }): Promise<string> {
   const registered = await SELF.fetch(new Request(`${origin}/register`, {
     method: "POST",
     headers: { "content-type": "application/json" },
@@ -169,6 +171,7 @@ export async function signIn(origin: string, input: { email?: string; key?: stri
   form.set("mode", input.email ? "create" : input.key ? "join" : "connect");
   if (input.email) form.set("email", input.email);
   if (input.key) form.set("key", input.key);
+  if (input.agentHandle) form.set("agent_handle", input.agentHandle);
   form.set("decision", "approve");
   form.set("label", "test-bot");
   form.append("scope", "click");
@@ -209,6 +212,11 @@ export async function signIn(origin: string, input: { email?: string; key?: stri
     lastHandoffPage = ready;
     location = /data-href="([^"]+)"/.exec(ready)?.[1]?.replaceAll("&amp;", "&") ?? null;
     if (!location) throw new Error(`no continue link: ${ready}`);
+  } else if (!input.email && !input.key && posted.status === 200) {
+    // Connect with no invite: the person sees the agent's handle, then continues.
+    lastConnectPage = await posted.text();
+    location = /class="button" href="([^"]+)"/.exec(lastConnectPage)?.[1]?.replaceAll("&amp;", "&") ?? null;
+    if (!location) throw new Error(`no continue link: ${lastConnectPage}`);
   } else if (posted.status !== 302 || !location) {
     throw new Error(`consent ${posted.status}: ${await posted.text()}`);
   }

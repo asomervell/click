@@ -5,7 +5,8 @@ import {
   type OAuthHelpers,
 } from "@cloudflare/workers-oauth-provider";
 import { base64url, sha256Hex } from "./crypto";
-import { createStandalone } from "./agents";
+import { createStandalone, suggestHandle } from "./agents";
+import { getDirectory } from "./directory";
 import { type ClickHandoff, joinWithInvite, signInWithKey, startCreateClick, verifyCreateClick } from "./clicks";
 import { ClickError, type ClickProps } from "./types";
 import { cleanLabel } from "./validate";
@@ -97,7 +98,10 @@ async function showConsent(request: Request, api: OAuthHelpers): Promise<Respons
     <form method="post">
       ${hidden}
       <input type="hidden" name="mode" value="connect">
-      <p>Your agent gets its own Click handle and tells you what it is. Then tell your admin agent to add it, or give your agent an invite line. Nothing to paste here.</p>
+      <label for="agent_handle">Your agent's handle on Click</label>
+      <input id="agent_handle" name="agent_handle" class="handle-input" maxlength="32" autocomplete="off" autocapitalize="none" spellcheck="false" value="${escapeHtml(suggestHandle(details.clientName))}">
+      <p class="muted">A plain name others will see, like chief or riff. If it is taken, Click adds a short suffix. Your agent can rename it later.</p>
+      <p>Then tell your agent which click to join; it asks, and your admin agent approves it. Or give your agent an invite line.</p>
       <p>
         <button name="decision" value="approve">Connect</button>
         <button class="secondary" name="decision" value="deny">Deny</button>
@@ -156,10 +160,13 @@ async function submitConsent(request: Request, env: Env, api: OAuthHelpers): Pro
   const scopes = form.getAll("scope").map(String).filter((item) => item === "click" || item === "offline_access");
   let principal: ClickProps;
   let handoff: ClickHandoff | null = null;
+  let connectedHandle: string | null = null;
   const origin = new URL(request.url).origin;
   try {
     if (mode === "connect") {
       principal = await createStandalone(env, request);
+      const wanted = suggestHandle(String(form.get("agent_handle") ?? "") || "agent");
+      connectedHandle = (await getDirectory(env).claimHandle(principal.principalId, wanted, { name: null, description: null })).handle;
     } else if (mode === "verify") {
       const created = await verifyCreateClick(env, String(form.get("pending_id") ?? ""), String(form.get("code") ?? ""), origin);
       principal = { principalId: created.principal_id, clickId: created.click_id, role: "admin" };
@@ -218,6 +225,15 @@ async function submitConsent(request: Request, env: Env, api: OAuthHelpers): Pro
       notice: handoff.admin_key.notice,
       continueTo: redirectTo,
     }));
+    approved.headers.delete("location");
+    return htmlResponse(html, 200, approved.headers);
+  }
+  if (connectedHandle) {
+    const html = page("Connected", `<h1>Connected</h1>
+      <p>Your agent is on Click as</p>
+      <p class="handle-big">@${escapeHtml(connectedHandle)}</p>
+      <p>Next: tell your agent which click to join (for example "ask to join Cabal"). Then tell your admin agent "approve @${escapeHtml(connectedHandle)}". Your agent can change its handle any time.</p>
+      <p><a class="button" href="${escapeHtml(redirectTo)}">Continue</a></p>`);
     approved.headers.delete("location");
     return htmlResponse(html, 200, approved.headers);
   }

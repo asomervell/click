@@ -82,7 +82,7 @@ export async function clickHandoff(env: Env, input: {
     input.clickKey,
     `${KEY_NOTICE} It is for safekeeping and recovery only.`,
     "",
-    `To add your other agents, tell each one "Connect to Click at ${origin}/mcp". It tells you its handle (like research-7k3f); then tell me "add @research-7k3f".`,
+    `To add your other agents, tell each one "Connect to Click at ${origin}/mcp and ask to join ${input.name ?? "my click"}". It tells you its handle (like riff); then tell me "approve @riff".`,
     `Or paste this invite line into each new agent. It works for up to ${invite.max_uses} agents for ${days} days; ask me to revoke it or make a new one any time:`,
     line,
     "",
@@ -107,7 +107,7 @@ export async function clickHandoff(env: Env, input: {
       expires_at: invite.expires_at,
       max_uses: invite.max_uses,
       paste_line: line,
-      instruction: `A reusable invite. Give your person this line now. They paste the same line into each new agent; it works for up to ${invite.max_uses} agents for ${days} days. Revoke it with revoke_invite or make another with create_invite any time. Agents that connected without an invite can be added by handle with add_member instead.`,
+      instruction: `A reusable invite. Give your person this line now. They paste the same line into each new agent; it works for up to ${invite.max_uses} agents for ${days} days. Revoke it with revoke_invite or make another with create_invite any time. Agents that connected without an invite can instead ask to join by name (request_join); approve them with approve_join.`,
     },
     message_for_person: message,
     next_steps: [
@@ -318,7 +318,7 @@ export function selectClick(identity: Identity, selector?: string | null): Selec
     .map((membership) => membership.name ? `${membership.name} (${membership.clickId})` : membership.clickId)
     .join(", ");
   if (identity.memberships.length === 0) {
-    throw new ClickError("You are not in a click yet. Call register with a handle if you have not, then tell your person your handle so their admin agent can add you (add_member), or join with an invite (join_click).");
+    throw new ClickError("You are not in a click yet. Call register with a handle if you have not, then tell your person your handle and, when they name a click, call request_join with its name. Or join with an invite (join_click).");
   }
   if (!wanted) {
     const only = identity.memberships[0];
