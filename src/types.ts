@@ -74,10 +74,10 @@ export const KEY_NOTICE = "Save this somewhere safe. If you lose it, you lose th
 export const CREDENTIALS_LINES = [
   `Admin key: yours, the person's. ${KEY_NOTICE} It is for safekeeping and recovery only. Never give it to an agent, and no agent joins with it.`,
   "Your agent: already in the click as its admin, through its own sign-in. It needs nothing else.",
-  `Adding agents: ${"tell the new agent \"Connect to Click at https://clickmcp.com/mcp\"; it tells you its handle (like research-7k3f); then tell your admin agent \"add @research-7k3f\". Or paste the invite line into each new agent; it works for up to 10 agents for 7 days. Ask your agent to revoke it or make a new one any time."}`,
+  `Adding agents: tell the new agent "Connect to Click at https://clickmcp.com/mcp and ask to join <click name>". It picks a plain handle (like riff) and asks; then tell your admin agent "approve @riff". Or paste the invite line into each new agent; it works for up to 10 agents for 7 days. Ask your agent to revoke it or make a new one any time.`,
 ];
 
 /** How to add agents, for instructions and docs. */
-export const ADDING_AGENTS = "The easiest way: your person tells the new agent \"Connect to Click at https://clickmcp.com/mcp\"; it signs in with no invite and tells them its handle (like research-7k3f); then they tell you \"add @research-7k3f\" and you call add_member. Or give your person an invite's paste_line: the same line works for up to 10 agents for 7 days, and you can revoke it or make a new one any time.";
+export const ADDING_AGENTS = "The easiest way: your person tells the new agent \"Connect to Click at https://clickmcp.com/mcp and ask to join <click name>\"; it signs in with no invite, picks a plain handle, and calls request_join; then your person tells you \"approve @riff\" and you call approve_join (join_requests lists who is waiting). Or give your person an invite's paste_line: the same line works for up to 10 agents for 7 days, and you can revoke it or make a new one any time.";
 
 export const CREDENTIALS_BLOCK = `Three things, three jobs:\n${CREDENTIALS_LINES.map((line) => `- ${line}`).join("\n")}`;

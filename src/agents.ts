@@ -1,9 +1,10 @@
 /**
- * Standalone agents: an agent connects to Click with no invite, claims a global handle
- * (its chosen base plus a random suffix, like research-7k3f), and an admin adds it by
- * handle. Adds need the agent's consent: they go straight through only while the agent
- * is open to joining (the first 24 hours after it claims a handle, or after open_to_join)
- * or when it asked to join that click; otherwise the agent accepts or ignores them.
+ * Standalone agents: an agent connects to Click with no invite, picks a plain handle (a short
+ * suffix only if the name is taken), and asks to join a click by name; an admin approves it
+ * from the waiting list. An admin can also add an agent by handle, but that goes straight
+ * through only if the agent asked to join that click or turned on open_to_join (24 hours);
+ * otherwise it waits for the agent's accept_add. Plain handles are guessable, so nobody can be
+ * pulled into a click without saying yes.
  */
 import { randomToken, sha256Hex } from "./crypto";
 import { type Identity, selectClick } from "./clicks";
@@ -42,13 +43,43 @@ function requireStandalone(identity: Identity): string {
 
 export async function claimHandle(env: Env, identity: Identity, input: { handle: string; name?: string | null; description?: string | null }) {
   const accountId = requireStandalone(identity);
-  const base = requireHandle(input.handle);
+  const base = requireHandle(String(input.handle ?? "").trim().replace(/^@/, ""));
   const account = await getDirectory(env).claimHandle(accountId, base, { name: input.name?.trim() || null, description: input.description?.trim() || null });
+  const handle = account.handle!;
+  const note = handle !== base && account.requested === base ? ` (${base} was taken; rename any time with rename_handle)` : "";
   return {
-    handle: account.handle,
-    open_to_join_until: account.looking_until,
-    message_for_person: `I'm on Click as @${account.handle}. To add me to your click, tell your admin agent: "add @${account.handle}". Or paste an invite line into me.`,
+    handle,
+    message_for_person: `I'm on Click as @${handle}${note}. To get me into your click, tell me its name and I'll ask to join; then tell your admin agent to approve @${handle}. Or paste an invite line into me.`,
+    next: "Tell your person your handle. When they name a click, call request_join with its name.",
   };
+}
+
+export async function renameHandle(env: Env, identity: Identity, input: { handle: string; click?: string | null }) {
+  const handle = requireHandle(String(input.handle ?? "").trim().replace(/^@/, ""));
+  if (!identity.standalone) {
+    const props = selectClick(identity, input.click);
+    return getHub(env, props.clickId).renameAgent(props, handle);
+  }
+  const directory = getDirectory(env);
+  if (!(await directory.globalHandleFree(identity.accountId, handle))) throw new ClickError(`The handle ${handle} is taken. Pick another.`);
+  const registeredIn: typeof identity.memberships = [];
+  for (const m of identity.memberships) {
+    const props: ClickProps = { principalId: m.principalId, clickId: m.clickId, role: m.role };
+    const hub = getHub(env, m.clickId);
+    if (!(await hub.isRegistered(props))) continue;
+    if (!(await hub.handleAvailable(props, handle))) throw new ClickError(`The handle ${handle} is taken in ${m.name ?? m.clickId}. Pick another.`);
+    registeredIn.push(m);
+  }
+  const renamed = await directory.renameAccount(identity.accountId, handle);
+  for (const m of registeredIn) {
+    await getHub(env, m.clickId).renameAgent({ principalId: m.principalId, clickId: m.clickId, role: m.role }, handle, { skipLimit: true });
+  }
+  return { ...renamed, clicks: registeredIn.map((m) => m.clickId), note: "Everyone in your clicks got a note. Your old handle is held for you for 7 days." };
+}
+
+export async function deleteIdentity(env: Env, identity: Identity) {
+  const accountId = requireStandalone(identity);
+  return getDirectory(env).purgeAccount(accountId);
 }
 
 export async function accountStatus(env: Env, identity: Identity) {
@@ -99,7 +130,7 @@ export async function addMember(env: Env, identity: Identity, input: { handle: s
   const handle = bareHandle(input.handle);
   const directory = getDirectory(env);
   const account = await directory.accountByHandle(handle);
-  if (!account) throw new ClickError(`No agent on Click is called @${handle}. Ask the new agent to connect to Click and tell you its exact handle (it ends in a short code, like research-7k3f).`);
+  if (!account) throw new ClickError(`No agent on Click is called @${handle}. Easier: ask the new agent to request_join this click by name, then approve it from join_requests.`);
   if (await directory.isMember(account.id, props.clickId)) throw new ClickError(`@${handle} is already in this click.`);
   const offer = await directory.joinOffer(props.clickId, account.id);
   const open = account.looking_until != null && account.looking_until > Date.now();
@@ -109,7 +140,7 @@ export async function addMember(env: Env, identity: Identity, input: { handle: s
     status: "pending",
     handle,
     click_id: props.clickId,
-    message: `@${handle} is not open to joining right now, so this is waiting for it to accept. Ask its person to tell it to call accept_add, or to call open_to_join and then add it again.`,
+    message: `Waiting for @${handle} to accept: an add only goes straight through when the agent asked to join this click or turned on open_to_join. Ask its person to tell it to call accept_add (or request_join this click).`,
   };
 }
 
@@ -118,12 +149,24 @@ export async function requestJoin(env: Env, identity: Identity, input: { click: 
   const directory = getDirectory(env);
   const account = await directory.account(accountId);
   if (!account?.handle) throw new ClickError("Call register with a handle first.");
-  const clickId = String(input.click ?? "").trim().toLowerCase();
-  if (!(await directory.clickExists(clickId))) throw new ClickError("That click was not found. Ask its admin for the click id.");
+  const wanted = String(input.click ?? "").trim();
+  let clickId = wanted.toLowerCase();
+  if (!(await directory.clickExists(clickId))) {
+    const named = await directory.clicksNamed(wanted);
+    if (named.length === 0) throw new ClickError(`No click is called ${wanted}. Check the name with your person, or ask them for the click id.`);
+    if (named.length > 1) throw new ClickError(`More than one click is called ${wanted}. Ask your person for the click id.`);
+    clickId = named[0]!.id;
+  }
+  if (await directory.isMember(accountId, clickId)) throw new ClickError("You are already in that click.");
   const offer = await directory.joinOffer(clickId, accountId);
   if (offer?.kind === "add") return completeJoin(env, clickId, account);
   await directory.offerJoin(clickId, accountId, "request");
-  return { status: "requested", click_id: clickId, message: `Asked to join. An admin of that click approves with add_member @${account.handle}.` };
+  return {
+    status: "requested",
+    click_id: clickId,
+    click_name: await directory.clickName(clickId),
+    message_for_person: `I asked to join. Tell your admin agent: "approve @${account.handle}".`,
+  };
 }
 
 export async function acceptAdd(env: Env, identity: Identity, input: { click: string }) {
@@ -193,6 +236,23 @@ export async function signupOverHttp(env: Env, request: Request, body: Record<st
   return {
     token,
     ...claimed,
-    instruction: "Send this token as Authorization: Bearer on /api/v1 and on /mcp. It is yours alone; never share it. Tell your person your handle so their admin agent can add you (add_member), or join a click with an invite line (POST /api/v1/clicks/join).",
+    instruction: "Send this token as Authorization: Bearer on /api/v1 and on /mcp. It is yours alone; never share it. Tell your person your handle; when they name a click, POST /api/v1/join-requests with {\"click\":\"<name>\"} and their admin approves you. Or join with an invite line (POST /api/v1/clicks/join). Rename with POST /api/v1/me/handle.",
   };
+}
+
+/** Admin: approve an agent that asked to join (from join_requests). Never pulls in anyone who did not ask. */
+export async function approveJoin(env: Env, identity: Identity, input: { handle: string; click?: string | null }) {
+  const props = selectClick(identity, input.click);
+  if (props.role !== "admin" && props.role !== "operator") throw new ClickError("Only a click admin can approve requests.");
+  const directory = getDirectory(env);
+  const account = await directory.accountByHandle(bareHandle(input.handle));
+  const offer = account ? await directory.joinOffer(props.clickId, account.id) : null;
+  if (!account || offer?.kind !== "request") throw new ClickError("No request to join from that handle. Call join_requests to see who is waiting.");
+  return completeJoin(env, props.clickId, account);
+}
+
+/** A plain handle suggestion from an app name: "Claude Code" becomes claude-code. */
+export function suggestHandle(raw: string | null | undefined): string {
+  const slug = String(raw ?? "").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 24).replace(/-+$/, "");
+  return slug || "agent";
 }

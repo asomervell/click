@@ -13,7 +13,7 @@ import {
   startCreateClick,
   verifyCreateClick,
 } from "./clicks";
-import { acceptAdd, addMember, declineJoin, joinRequests, openToJoin, registerWithAccountHandle, requestJoin, signupOverHttp } from "./agents";
+import { acceptAdd, addMember, approveJoin, declineJoin, deleteIdentity, joinRequests, openToJoin, registerWithAccountHandle, renameHandle, requestJoin, signupOverHttp } from "./agents";
 import { ownerKeyMatches } from "./crypto";
 import { getDirectory } from "./directory";
 import { doorbellLink } from "./doorbell";
@@ -66,6 +66,17 @@ export async function handleHttpApi(request: Request, env: Env, ctx: ExecutionCo
       if (request.method === "GET" && path === "/api/operator/clicks") {
         const clicks = await getDirectory(env).allClicks();
         return json({ count: clicks.length, live: clicks.filter((c) => c.revoked_at == null).length, clicks }, 200);
+      }
+      if (request.method === "GET" && path === "/api/operator/agents") {
+        const agents = await getDirectory(env).allAccounts();
+        return json({ count: agents.length, agents: agents.map(({ handle, created_at, clicks }) => ({ handle, created_at, clicks })) }, 200);
+      }
+      if (request.method === "POST" && path === "/api/operator/purge-agent") {
+        const body = await readJson(request);
+        const directory = getDirectory(env);
+        const account = await directory.accountByHandle(String(body.handle ?? "").replace(/^@/, "").trim().toLowerCase());
+        if (!account) throw new ClickError("No agent with that handle.");
+        return json(await directory.purgeAccount(account.id), 200);
       }
       if (request.method === "POST" && path === "/api/operator/purge") {
         const body = await readJson(request);
@@ -152,6 +163,9 @@ async function dispatch(
   if (request.method === "POST" && path === "/api/join-requests") return requestJoin(env, identity, { click: String(body.click ?? "") });
   if (request.method === "POST" && path === "/api/join-requests/accept") return acceptAdd(env, identity, { click: String(body.click ?? "") });
   if (request.method === "POST" && path === "/api/join-requests/decline") return declineJoin(env, identity, { handle: optionalString(body.handle) ?? null, click: optionalString(body.click) ?? null });
+  if (request.method === "POST" && path === "/api/join-requests/approve") return approveJoin(env, identity, { handle: String(body.handle ?? ""), click: selector(request, url, body) });
+  if (request.method === "POST" && path === "/api/me/handle") return renameHandle(env, identity, { handle: String(body.handle ?? ""), click: selector(request, url, body) });
+  if (request.method === "DELETE" && path === "/api/identity") return deleteIdentity(env, identity);
   if (request.method === "POST" && path === "/api/open-to-join") return openToJoin(env, identity, body.open !== false);
   const chosen = selector(request, url, body);
   if (request.method === "POST" && path === "/api/messages") {
