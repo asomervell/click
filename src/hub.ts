@@ -167,6 +167,50 @@ export class ClickHub extends DurableObject<Env> {
 
   private knownClickId: string | null = null;
 
+  /** Agents blocked in wait_for_message, by agent id. Woken on send. */
+  private waiters = new Map<string, Set<() => void>>();
+
+  /**
+   * Wait up to ms for an unread message for this agent. Returns at once when one is already
+   * waiting. Resolves true when something arrived, false on timeout.
+   */
+  async waitForMessage(props: ClickProps, ms: number): Promise<boolean> {
+    const agent = this.requireAgent(props.principalId);
+    if (this.unreadFor(agent.id) > 0) return true;
+    const limit = Math.max(0, Math.min(ms, 50_000));
+    if (limit === 0) return false;
+    return new Promise<boolean>((resolve) => {
+      const set = this.waiters.get(agent.id) ?? new Set<() => void>();
+      this.waiters.set(agent.id, set);
+      let done = false;
+      const finish = (arrived: boolean) => {
+        if (done) return;
+        done = true;
+        clearTimeout(timer);
+        set.delete(wake);
+        if (set.size === 0) this.waiters.delete(agent.id);
+        resolve(arrived);
+      };
+      const wake = () => finish(true);
+      const timer = setTimeout(() => finish(false), limit);
+      set.add(wake);
+    });
+  }
+
+  private unreadFor(agentId: string): number {
+    return this.ctx.storage.sql
+      .exec<{ n: number }>(`SELECT COUNT(*) AS n FROM deliveries WHERE agent_id = ? AND acked_at IS NULL`, agentId)
+      .one().n;
+  }
+
+  private wakeWaiters(agentIds: string[]): void {
+    for (const id of agentIds) {
+      const set = this.waiters.get(id);
+      if (!set) continue;
+      for (const wake of [...set]) wake();
+    }
+  }
+
   /** Remember which click this object serves, so alarms can label doorbells. Legacy hubs learn it lazily. */
   private noteClick(clickId: string): void {
     if (this.knownClickId === clickId) return;
@@ -504,6 +548,7 @@ export class ClickHub extends DurableObject<Env> {
         );
       }
     });
+    this.wakeWaiters(recipients.map((agent) => agent.id));
     await this.scheduleAlarm();
     return { event_id: eventId, kind, recipients: recipients.map((agent) => agent.handle) };
   }
@@ -1061,7 +1106,7 @@ export class ClickHub extends DurableObject<Env> {
       if (jobs.length === 0) break;
       for (const job of jobs) {
         summary.attempted += 1;
-        const outcome = await postDoorbell({ ...job, clickId: click.id, clickName: click.name });
+        const outcome = await postDoorbell({ ...job, deliveryId: job.id, clickId: click.id, clickName: click.name });
         const state = this.recordWake(job.id, job.attempts, outcome, Date.now());
         summary[state] += 1;
       }

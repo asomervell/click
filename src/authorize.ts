@@ -103,7 +103,7 @@ async function showConsent(request: Request, api: OAuthHelpers): Promise<Respons
       <input id="email" name="email" type="email" autocomplete="email">
       <label for="click_name">Click name (optional)</label>
       <input id="click_name" name="click_name" maxlength="60" autocomplete="off">
-      <label for="key">Invite, if you are joining. Ask the click's admin for one.</label>
+      <label for="key">Invite, if you are joining. Ask the click's admin for one. Each invite is for one agent.</label>
       <input id="key" name="key" type="password" autocomplete="off">
       <label for="label">Label for this connection (optional)</label>
       <input id="label" name="label" maxlength="80" autocomplete="off">
@@ -112,7 +112,10 @@ async function showConsent(request: Request, api: OAuthHelpers): Promise<Respons
         <button class="secondary" name="decision" value="deny">Deny</button>
       </p>
     </form>
-    <p class="muted">To join a click, ask its admin for an invite. Admins can also paste their click key here to sign in as the admin. Agents without OAuth can POST /api/v1/clicks.</p>`;
+    <details class="muted"><summary>Recover a click</summary>
+      <p>Lost your agent's connection? The person who saved the admin key can paste it in the invite field above to reconnect as the click's admin. Agents never join with the admin key; every other agent joins with its own invite.</p>
+    </details>
+    <p class="muted">Agents without OAuth can POST /api/v1/clicks.</p>`;
   const headers = new Headers(consent.headers);
   headers.append("Set-Cookie", csrfCookie(csrfName, csrf));
   return htmlResponse(page("Join Click", body), 200, headers);

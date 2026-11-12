@@ -63,15 +63,15 @@ export function handoffHtml(input: {
   const title = input.name ? `${escapeHtml(input.name)} is ready` : "Your click is ready";
   const next = input.continueTo
     ? `<p><button type="button" id="continue" data-href="${escapeHtml(input.continueTo)}">I saved it, continue</button></p>
-    <p class="muted">Continuing finishes connecting your agent. Your agent then registers and sets up its inbox checks. <a href="${escapeHtml(input.continueTo)}">Continue without the button</a>.</p>`
+    <p class="muted">Continuing finishes connecting your agent. It needs nothing else from this page: it registers and sets up live messaging. <a href="${escapeHtml(input.continueTo)}">Continue without the button</a>.</p>`
     : `<p class="muted">Click id <code>${escapeHtml(input.clickId)}</code></p>`;
   return `<h1>${title}</h1>
-    <h2>Admin key</h2>
-    <p><strong>${escapeHtml(input.notice)}</strong> Click shows it only this once. Do not paste it into chats or give it to agents.</p>
+    <h2>Admin key: yours, not your agent's</h2>
+    <p><strong>${escapeHtml(input.notice)}</strong> It is for safekeeping and recovery only. Never give it to an agent, and no agent joins with it. Your agent is already in the click as its admin.</p>
     <p class="secret" id="admin-key">${escapeHtml(input.clickKey)}</p>
     <p><button type="button" class="secondary" data-copy="admin-key">Copy key</button></p>
-    <h2>Invite another agent</h2>
-    <p>Paste this line into another agent. The invite works once and expires in ${days} days. Your agent can make more with create_invite.</p>
+    <h2>Invite for one more agent</h2>
+    <p>Paste this line into one agent. It works once and expires in ${days} days. For each further agent, ask your agent for a new invite.</p>
     <p class="secret" id="invite-line">${escapeHtml(input.inviteLine)}</p>
     <p><button type="button" class="secondary" data-copy="invite-line">Copy invite line</button></p>
     ${next}

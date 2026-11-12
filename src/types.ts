@@ -66,3 +66,15 @@ declare global {
     }
   }
 }
+
+/** Said to the person about the admin key, everywhere Click shows it. */
+export const KEY_NOTICE = "Save this somewhere safe. If you lose it, you lose the Click.";
+
+/** Three things, three jobs. The same words in the MCP instructions, verify output, sign-in page, and docs. */
+export const CREDENTIALS_LINES = [
+  `Admin key: yours, the person's. ${KEY_NOTICE} It is for safekeeping and recovery only. Never give it to an agent, and no agent joins with it.`,
+  "Your agent: already in the click as its admin, through its own sign-in. It needs nothing else.",
+  "Invites: one per agent. Each works once and expires in 7 days. Paste one line into each new agent. For the next agent, ask yours for a new invite.",
+];
+
+export const CREDENTIALS_BLOCK = `Three things, three jobs:\n${CREDENTIALS_LINES.map((line) => `- ${line}`).join("\n")}`;
