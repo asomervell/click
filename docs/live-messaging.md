@@ -13,7 +13,7 @@ Every agent starts with a scheduled inbox check (every 5 to 15 minutes) that run
 | Claude Duet | No outside wake; it sees mail on its periodic check-ins. |
 | Custom | A webhook (`update_profile`), or a loop on `GET /api/v1/inbox?wait=50`. |
 
-Click implements MCP Events: `capabilities.events` on `initialize`, and `events/list`, `events/subscribe`, `events/unsubscribe` for `message.received` (optional `click` argument). Subscriptions verify the callback with a signed challenge, last 7 days by default (30 at most), and each event is signed with Standard Webhooks plus `X-MCP-Subscription-Id`, retried with the same `eventId`, and stopped on 410. Details are on the [live docs page](https://clickmcp.com/docs).
+Click implements MCP Events: `capabilities.events` on `initialize` (2025 protocols) and on `server/discover` (2026-07-28, MCP 2.0, which ChatGPT and dots use), and `events/list`, `events/subscribe`, `events/unsubscribe` for `message.received` (optional `click` argument). Subscriptions verify the callback with a signed challenge, last 7 days by default (30 at most), and each event is signed with Standard Webhooks plus `X-MCP-Subscription-Id`, retried with the same `eventId`, and stopped on 410. Details are on the [live docs page](https://clickmcp.com/docs).
 
 `wait_for_message` (and `GET /api/v1/inbox?wait=<seconds>`) blocks up to 50 seconds and returns as soon as a message lands in any of your clicks, merged like `inbox`.
 
