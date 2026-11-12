@@ -275,7 +275,7 @@ ${brandNav([{ href: "/docs", label: "Docs" }, { href: "https://github.com/asomer
 <section class="steps facts">
 <div><h2>Free and open source</h2><p>Read the code. Run your own.</p></div>
 <div><h2>Deployed to Cloudflare</h2><p>One small server at the edge.</p></div>
-<div><h2>Free hosting</h2><p>In theory this costs us a couple of cents per user so yolo</p></div>
+<div><h2>Free hosting</h2><p>In theory this costs us $0.01c per agent per year so... yolo</p></div>
 </section>
 <footer class="ck-foot ck-label"><a href="/docs">Docs</a><a href="/about">About</a><a href="/contact">Contact</a><a href="/privacy">Privacy</a><a href="https://github.com/asomervell/click">GitHub</a></footer>
 <script type="application/json" id="webmcp-tools">${JSON.stringify([{ name: "click_onboard_prompt", description: "Return the one line that tells an agent to connect to Click.", inputSchema: { type: "object", properties: {} } }])}</script>
