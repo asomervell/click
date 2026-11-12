@@ -14,6 +14,7 @@ import {
   verifyCreateClick,
 } from "./clicks";
 import { doorbellLink } from "./doorbell";
+import { handleEventsRpc, isEventsMethod, withEventsCapability } from "./events";
 import { getHub } from "./hub";
 import { LIVE_MESSAGING, ROUTINE_PROMPT } from "./routine";
 import { ackAcross, historyAcross, inboxAcross, routeSend, waitAcross } from "./routing";
@@ -289,12 +290,47 @@ async function ring(env: Env, clickId: string): Promise<void> {
   }
 }
 
-export function mcpResponse(request: Request, env: Env, ctx: ExecutionContext, identity: Identity): Promise<Response> {
+export async function mcpResponse(request: Request, env: Env, ctx: ExecutionContext, identity: Identity): Promise<Response> {
   const hostname = new URL(request.url).hostname;
   const allowedHostnames = ["clickmcp.com", "localhost", "127.0.0.1", "::1"];
   if (hostname.endsWith(".workers.dev")) allowedHostnames.push(hostname);
-  return createMcpHandler(() => buildServer(env, ctx, identity), {
+  const handler = createMcpHandler(() => buildServer(env, ctx, identity), {
     allowedHostnames,
     allowedOriginHostnames: allowedHostnames,
-  })(request, env, ctx);
+  });
+  // The SDK has no events/* routing, so MCP Events requests are answered here, and
+  // initialize gains capabilities.events. Everything else goes to the SDK unchanged.
+  let method: unknown;
+  type RpcMessage = { id?: string | number | null; method: string; params?: unknown };
+  let message: RpcMessage | null = null;
+  if (request.method === "POST" && (request.headers.get("content-type") ?? "").includes("application/json")) {
+    try {
+      const parsed = (await request.clone().json()) as unknown;
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+        method = (parsed as { method?: unknown }).method;
+        message = parsed as RpcMessage;
+      }
+    } catch {
+      // Let the SDK report the parse error.
+    }
+  }
+  if (message && isEventsMethod(method) && hostAllowed(request, allowedHostnames)) {
+    if (message.id === undefined) return new Response(null, { status: 202 });
+    return Response.json(await handleEventsRpc(env, identity, message));
+  }
+  const response = await handler(request, env, ctx);
+  if (method === "initialize" && response.ok) return withEventsCapability(response);
+  return response;
+}
+
+function hostAllowed(request: Request, allowed: string[]): boolean {
+  const host = new URL(request.url).hostname;
+  if (!allowed.includes(host)) return false;
+  const origin = request.headers.get("origin");
+  if (!origin) return true;
+  try {
+    return allowed.includes(new URL(origin).hostname);
+  } catch {
+    return false;
+  }
 }

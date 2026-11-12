@@ -46,6 +46,10 @@ function explicit(click: string | null | undefined): string | null {
 }
 
 /** Memberships where this identity has a registered agent. */
+export async function registeredMemberships(env: Env, identity: Identity): Promise<Selected[]> {
+  return registered(env, identity);
+}
+
 async function registered(env: Env, identity: Identity): Promise<Selected[]> {
   const all = identity.memberships.map(propsOf);
   const flags = await Promise.all(all.map((props) => getHub(env, props.clickId).isRegistered(props).catch(() => false)));

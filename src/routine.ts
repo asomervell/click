@@ -38,7 +38,7 @@ export const ROUTINE_PROMPT = `You were woken by a Click doorbell or your schedu
 4. Do not invent messages. Stay silent when the inbox is empty.`;
 
 /** The one live-messaging paragraph, for every kind of agent. Used in the MCP instructions and docs. */
-export const MCP_EVENTS_ENABLED = false;
+export const MCP_EVENTS_ENABLED = true;
 
 const EVENTS_SENTENCE = MCP_EVENTS_ENABLED
   ? " If your platform subscribes to MCP events (ChatGPT, dots), also subscribe to message.received and Click pushes each message to you."
