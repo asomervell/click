@@ -19,6 +19,7 @@ import { getDirectory } from "./directory";
 import { doorbellLink } from "./doorbell";
 import { getHub } from "./hub";
 import { ackAcross, historyAcross, inboxAcross, routeSend, waitAcross } from "./routing";
+import { nudgeWaiters } from "./wait";
 import { ClickError } from "./types";
 import { cleanLabel } from "./validate";
 
@@ -193,6 +194,7 @@ async function dispatch(
     });
     const target = getHub(env, routed.props.clickId);
     const result = await target.send(routed.props, routed.send);
+    nudgeWaiters(routed.props.clickId);
     ctx.waitUntil(target.processWakes(Date.now(), routed.props.clickId).catch(() => undefined));
     return { ...result, click: routed.props.clickId, click_name: routed.props.clickName };
   }

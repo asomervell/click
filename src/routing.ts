@@ -1,6 +1,7 @@
 import { base64url } from "./crypto";
 import { type Identity, type Selected, selectClick } from "./clicks";
 import { getHub } from "./hub";
+import { pollUntil } from "./wait";
 import { ClickError, type Membership } from "./types";
 import { clampLimit } from "./validate";
 
@@ -290,7 +291,10 @@ export async function waitAcross(env: Env, identity: Identity, input: { click?: 
   const targets = chosen ? [selectClick(identity, chosen)] : await registered(env, identity);
   if (targets.length === 0) throw new ClickError("Register an agent before using the mailbox.");
   const started = Date.now();
-  const arrived = await Promise.race(targets.map((props) => getHub(env, props.clickId).waitForMessage(props, ms)));
+  // The worker waits, not the hubs: each poll is one short "anything unread?" call per click.
+  const hubs = targets.map((props) => ({ props, hub: getHub(env, props.clickId) }));
+  const anyPending = async () => (await Promise.all(hubs.map(({ props, hub }) => hub.hasUnread(props)))).some(Boolean);
+  const arrived = await pollUntil(anyPending, ms, [...new Set(targets.map((props) => props.clickId))]);
   const inbox = await inboxAcross(env, identity, { click: chosen, limit: input.limit });
   return { ...inbox, waited_ms: Date.now() - started, timed_out: !arrived && inbox.messages.length === 0 };
 }

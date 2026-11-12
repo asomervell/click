@@ -18,6 +18,7 @@ import { doorbellLink } from "./doorbell";
 import { handleEventsRpc, isEventsMethod, withEventsCapability } from "./events";
 import { getHub } from "./hub";
 import { forgetIdentities } from "./identity-cache";
+import { nudgeWaiters } from "./wait";
 import { LIVE_MESSAGING, ROUTINE_PROMPT } from "./routine";
 import { ackAcross, historyAcross, inboxAcross, routeSend, waitAcross } from "./routing";
 import { ADDING_AGENTS, ClickError, CREDENTIALS_BLOCK } from "./types";
@@ -231,6 +232,7 @@ export function buildServer(env: Env, ctx: ExecutionContext, identity: Identity)
     async (args) => {
       const routed = await routeSend(env, identity, args);
       const result = await hubFor(routed.props).send(routed.props, routed.send);
+      nudgeWaiters(routed.props.clickId);
       ctx.waitUntil(ring(env, routed.props.clickId));
       return { ...result, click: routed.props.clickId, click_name: routed.props.clickName };
     },
