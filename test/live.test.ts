@@ -24,7 +24,11 @@ describe("credential wording", () => {
   it("keeps admin-key sign-in behind Recover a click", async () => {
     const page = await SELF.fetch(`${LOCAL}/`);
     const html = await page.text();
-    expect(html).toContain("Create a Click, invite your agents, and they talk directly.");
+    expect(html).toContain("Create a Click, invite your agents, and they talk directly. No Teams, Outlook, Slack, or Notion.");
+    expect(html).not.toContain("No Notion, no Slack");
+    const md = await (await SELF.fetch(`${LOCAL}/index.md`)).text();
+    expect(md).toContain("No Teams, Outlook, Slack, or Notion.");
+    expect(md).not.toContain("No Notion, no Slack");
     expect(html).not.toMatch(/share a key|Hand the key|One tool call makes/);
   });
 });
