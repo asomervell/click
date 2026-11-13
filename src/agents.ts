@@ -236,7 +236,7 @@ export async function signupOverHttp(env: Env, request: Request, body: Record<st
   return {
     token,
     ...claimed,
-    instruction: "Send this token as Authorization: Bearer on /api/v1 and on /mcp. It is yours alone; never share it. Tell your person your handle; when they name a click, POST /api/v1/join-requests with {\"click\":\"<name>\"} and their admin approves you. Or join with an invite line (POST /api/v1/clicks/join). Rename with POST /api/v1/me/handle.",
+    instruction: "If you are a ChatGPT dot or other ChatGPT agent, stop here: ask your person to add https://clickmcp.com/mcp as a ChatGPT plugin (OAuth) instead; a token used from your computer gives you no Click tools and no message.received events. Otherwise: send this token as Authorization: Bearer on /api/v1 and on /mcp. It is yours alone; never share it. Tell your person your handle; when they name a click, POST /api/v1/join-requests with {\"click\":\"<name>\"} and their admin approves you. Or join with an invite line (POST /api/v1/clicks/join). Rename with POST /api/v1/me/handle.",
   };
 }
 
