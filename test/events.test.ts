@@ -97,7 +97,9 @@ describe("MCP Events", () => {
     expect(event.name).toBe("message.received");
     expect(events[0]!.headers.get("webhook-id")).toBe(event.eventId);
     expect(events[0]!.headers.get("x-mcp-subscription-id")).toBe(result.id);
-    expect(event.data).toMatchObject({ click: clickId, from: adaHandle, to: graceHandle, kind: "dm", text: "hello events", truncated: false });
+    expect(event.data).toMatchObject({ click: clickId, from: adaHandle, to: graceHandle, kind: "dm", text: "New Click message. Read it with inbox." });
+    expect(event.data).not.toHaveProperty("truncated");
+    expect(events[0]!.body).not.toContain("hello events");
     expect(await verifyStandardSignature({
       secret: SECRET,
       id: event.eventId,
@@ -109,11 +111,12 @@ describe("MCP Events", () => {
     // The message_id works with ack.
     await callTool(LOCAL, grace, "ack", { ids: [event.data.message_id] });
 
+    const before = hits.length;
     const off = await mcpCall(LOCAL, grace, "events/unsubscribe", { name: "message.received", arguments: {}, delivery: { mode: "webhook", url } });
     expect(off.result).toEqual({});
     await callTool(LOCAL, ada, "send", { to: graceHandle, text: "after unsubscribe" });
     await drain(clickId);
-    expect(hits.filter((hit) => hit.body.includes("after unsubscribe"))).toHaveLength(0);
+    expect(hits.length).toBe(before);
   });
 
   it("rejects a callback that does not echo the challenge, and a bad secret", async () => {
@@ -138,7 +141,7 @@ describe("MCP Events", () => {
     await hub.processWakes(Date.now());
     await hub.processWakes(Date.now() + 10_000);
     await hub.processWakes(Date.now() + 60_000);
-    const attempts = hits.filter((hit) => hit.body.includes("retry me"));
+    const attempts = hits.filter((hit) => hit.body.includes('"message.received"'));
     expect(attempts).toHaveLength(3);
     expect(new Set(attempts.map((hit) => hit.headers.get("webhook-id"))).size).toBe(1);
     expect((await hub.eventDeliveryStates()).at(-1)).toMatchObject({ status: "delivered", attempts: 3 });
@@ -146,10 +149,10 @@ describe("MCP Events", () => {
     const goneHits = mockReceiver(() => 410);
     await callTool(LOCAL, ada, "send", { to: graceHandle, text: "gone" });
     await hub.processWakes(Date.now());
+    expect(goneHits.filter((hit) => hit.body.includes('"message.received"'))).toHaveLength(1);
     await callTool(LOCAL, ada, "send", { to: graceHandle, text: "after gone" });
     await hub.processWakes(Date.now() + 3_600_000);
-    expect(goneHits.filter((hit) => hit.body.includes("after gone"))).toHaveLength(0);
-    expect(goneHits.filter((hit) => hit.body.includes('"gone"'))).toHaveLength(1);
+    expect(goneHits.filter((hit) => hit.body.includes('"message.received"'))).toHaveLength(1);
   });
 
   it("filters by click and only delivers to the subscriber", async () => {
@@ -159,8 +162,8 @@ describe("MCP Events", () => {
     await callTool(LOCAL, grace, "send", { to: adaHandle, text: "to ada" });
     await callTool(LOCAL, ada, "send", { to: graceHandle, text: "to grace" });
     await drain(clickId);
-    const bodies = hits.filter((hit) => !hit.body.includes('"verification"')).map((hit) => JSON.parse(hit.body).data.text);
-    expect(bodies).toEqual(["to grace"]);
+    const bodies = hits.filter((hit) => !hit.body.includes('"verification"')).map((hit) => JSON.parse(hit.body).data.to);
+    expect(bodies).toEqual([graceHandle]);
     const unknown = await mcpCall(LOCAL, grace, "events/subscribe", { ...subscribeParams("https://events.test/filter"), arguments: { project: "x" } });
     expect((unknown.error as { code: number }).code).toBe(-32602);
   });

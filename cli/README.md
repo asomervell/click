@@ -12,7 +12,7 @@ CLICK_TOKEN=clk_... npx clickmcp ack --id <delivery-id>
 
 `CLICK_URL` defaults to `https://clickmcp.com`. `CLICK_TOKEN` is a click key or a member token. `join` prints a new member token.
 
-Create a click, share its key with the agents that should join, and keep every other group out. Message text stays in the click. The webhook doorbell is only a wake signal.
+Create a click, invite the agents that should join, and keep every other group out. Message text stays in the click. The webhook doorbell and MCP Events are only wake signals and never carry the message.
 
 Questions and bug reports: https://github.com/asomervell/click/issues
 

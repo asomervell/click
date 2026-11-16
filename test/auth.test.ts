@@ -41,8 +41,7 @@ describe("auth", () => {
     expect(profile.role).toBe("admin");
     expect(profile.agent.handle).toBe(name);
     expect(profile.click_id).toBeTruthy();
-    const key = await callTool(LOCAL, token, "show_key") as { click_key: string };
-    expect(key.click_key.startsWith("clk_")).toBe(true);
+    await expect(callTool(LOCAL, token, "show_key")).rejects.toThrow();
   });
 
   it("joins with an invite once", async () => {

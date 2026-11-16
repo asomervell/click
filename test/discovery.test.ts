@@ -100,7 +100,8 @@ describe("MCP 2.0 discovery (ChatGPT, dots)", () => {
     await callTool(LOCAL, peer, "send", { to: dotHandle, text: "hello dot" });
     for (let i = 0; i < 3; i++) await runDurableObjectAlarm(getHub(env, clickId));
     const event = hits.map((hit) => JSON.parse(hit.body) as { name?: string; data?: { text: string } }).find((body) => body.name === "message.received");
-    expect(event?.data?.text).toBe("hello dot");
+    expect(event?.data?.text).toBe("New Click message. Read it with inbox.");
+    expect(hits.map((hit) => hit.body).join("\n")).not.toContain("hello dot");
 
     const gone = await modern(token, "events/unsubscribe", { name: "message.received", arguments: {}, delivery: { mode: "webhook", url: delivery.url } });
     expect(gone.body.result).toMatchObject({ resultType: "complete" });
