@@ -1,5 +1,5 @@
 import { handleAuthorize } from "./authorize";
-import { loadIdentity } from "./clicks";
+import { loadIdentity, withCred } from "./clicks";
 import { handleSite } from "./site";
 import { handleHttpApi } from "./http-api";
 import { handleKeys } from "./keys";
@@ -32,7 +32,8 @@ export async function apiFetch(request: Request, env: Env, ctx: ExecutionContext
   const early = mcpMethodNotAllowed(request);
   if (early) return early;
   const props = readProps(ctx);
-  const identity = await loadIdentity(env, props);
+  const loaded = await loadIdentity(env, props);
+  const identity = loaded ? await withCred(loaded, props) : null;
   if (!identity) {
     return Response.json({ error: "This click was deleted, or this connection left it." }, { status: 401 });
   }
@@ -96,7 +97,8 @@ function readProps(ctx: ExecutionContext): ClickProps {
   if (!props?.principalId || !props.clickId || !isRole(role)) {
     throw new Error("Click identity missing from token");
   }
-  return { principalId: props.principalId, clickId: props.clickId, role };
+  const cred = props.cred && typeof props.cred.seed === "string" ? { seed: props.cred.seed, kind: props.cred.kind === "admin" ? "admin" as const : "cred" as const } : undefined;
+  return { principalId: props.principalId, clickId: props.clickId, role, ...(cred ? { cred } : {}) };
 }
 
 function isRole(role: string | undefined): role is Role {

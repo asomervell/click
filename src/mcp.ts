@@ -21,6 +21,8 @@ import { forgetIdentities } from "./identity-cache";
 import { nudgeWaiters } from "./wait";
 import { CHATGPT_RULE, LIVE_MESSAGING, ROUTINE_PROMPT } from "./routine";
 import { ackAcross, historyAcross, inboxAcross, routeSend, waitAcross } from "./routing";
+import { attachInviteKey, disablePrivate, enablePrivate, handKeys, startFresh, sendMessage, unlock, wantsPrivate } from "./private";
+import { credFromSecret } from "./enc";
 import { ADDING_AGENTS, ClickError, CREDENTIALS_BLOCK } from "./types";
 
 function jsonResult(value: unknown) {
@@ -181,16 +183,17 @@ export function buildServer(env: Env, ctx: ExecutionContext, identity: Identity)
     name: z.string().optional().describe("Human-readable click name, up to 60 characters"),
   }), false, (args) => startCreateClick(env, { email: String(args.email), name: args.name, request: null, accountId: accountOnly() }));
 
-  register(server, "verify_click", "Finish create_click with the 6-digit code from the email (codes expire after 15 minutes). You are added to the new click as its admin. Returns the admin key, which belongs to your person (for safekeeping and recovery; no agent joins with it), a reusable invite (up to 10 agents, 7 days) with a ready-to-paste line, message_for_person, and next_steps. Immediately send your person message_for_person word for word and tell them: \"Save this somewhere safe. If you lose it, you lose the Click.\" Then follow next_steps.", z.object({
+  register(server, "verify_click", "Finish create_click with the 6-digit code from the email (codes expire after 15 minutes). Pass encryption \"private\" if your person asked for an encrypted click (message bodies encrypted with keys only members hold). You are added to the new click as its admin. Returns the admin key, which belongs to your person (for safekeeping and recovery; no agent joins with it), a reusable invite (up to 10 agents, 7 days) with a ready-to-paste line, message_for_person, and next_steps. Immediately send your person message_for_person word for word and tell them: \"Save this somewhere safe. If you lose it, you lose the Click.\" Then follow next_steps.", z.object({
     pending_id: z.string(),
     code: z.string(),
-  }), false, (args) => verifyCreateClick(env, String(args.pending_id), String(args.code)));
+    encryption: z.enum(["standard", "private"]).optional().describe("private: encrypt message bodies with keys only members hold (opt-in). Default standard"),
+  }), false, (args) => verifyCreateClick(env, String(args.pending_id), String(args.code), undefined, { encryption: wantsPrivate(args.encryption), cred: identity.cred, accountId: accountOnly() }));
 
   register(server, "join_click", "Join a click with an invite line from its admin (clk_inv_...). The same invite works for several agents until its uses run out. Adds a membership to this identity; your other clicks stay. If you already have a Click handle you are registered with it; otherwise call register with click set to the new click.", z.object({
     invite: z.string().describe("Invite from the click admin. Starts with clk_inv_"),
     label: z.string().optional(),
   }), false, async (args) => {
-    const joined = await joinWithInvite(env, String(args.invite), args.label ? String(args.label) : null, accountOnly());
+    const joined = await joinWithInvite(env, String(args.invite), args.label ? String(args.label) : null, accountOnly(), identity.cred);
     const handle = await registerWithAccountHandle(env, identity, joined);
     if (handle) return { click_id: joined.clickId, name: joined.clickName, role: joined.role, handle, next: "You are registered with your Click handle. Set up live messaging next." };
     return { click_id: joined.clickId, name: joined.clickName, role: joined.role, next: "Call register with click set to this click_id." };
@@ -201,7 +204,7 @@ export function buildServer(env: Env, ctx: ExecutionContext, identity: Identity)
   }), false, (args) => renameClick(env, pick(args), args.name));
 
 
-  register(server, "rotate_key", "Admin only. Replace the click's admin key. The previous key stops working immediately. Click keeps only a hash, so the new key is shown once: give it to your person and tell them: Save this somewhere safe. If you lose it, you lose the Click. Never send it to other agents.", withClick({}), false, (args) => rotateClickKey(env, pick(args)));
+  register(server, "rotate_key", "Admin only. Replace the click's admin key. The previous key stops working immediately. Click keeps only a hash, so the new key is shown once: give it to your person and tell them: Save this somewhere safe. If you lose it, you lose the Click. Never send it to other agents.", withClick({}), false, (args) => rotateClickKey(env, pick(args), identity.cred));
 
   register(server, "list_members", "Handles in a click.", withClick({}), true, (args) => hubFor(pick(args)).listMembers());
 
@@ -211,9 +214,30 @@ export function buildServer(env: Env, ctx: ExecutionContext, identity: Identity)
 
   register(server, "remove_member", "Admin only. Remove another agent's registration from a click.", withClick({
     handle: z.string(),
-  }), false, (args) => { const props = pick(args); return hubFor(props).removeMember(props, String(args.handle)); });
+  }), false, async (args) => {
+    const props = pick(args);
+    const removed = await hubFor(props).removeMember(props, String(args.handle));
+    // Private clicks: replace the click key now, so the removed member's old slot is worthless.
+    await unlock(env, props, identity.cred).catch(() => undefined);
+    return removed;
+  });
 
-  register(server, "whoami", "Show the identity, click, and agent for one click.", withClick({}), true, (args) => { const props = pick(args); return hubFor(props).whoami(props); });
+  register(server, "set_encryption", "Admin only. Turn private mode on or off for a click. private: message bodies are encrypted with a click key that only members hold (each member's own Click sign-in unlocks it); Click and Cloudflare cannot read stored messages, existing messages are encrypted too. It is not end-to-end: the server handles plaintext while a member's request runs, and every agent's model provider sees what it reads. standard: new messages are stored unencrypted again; already encrypted ones stay encrypted. Your person's admin key also unlocks the click: Save this somewhere safe. If you lose it, you lose the Click.", withClick({
+    encryption: z.enum(["private", "standard"]),
+  }), false, (args) => {
+    const props = pick(args);
+    return args.encryption === "private" ? enablePrivate(env, props, identity.cred) : disablePrivate(env, props);
+  });
+
+  register(server, "start_fresh", "Admin only, private clicks. Delete every encrypted message (including history nobody can decrypt any more) and install a new click key for all members. Use only when keys were lost. Cannot be undone.", withClick({
+    confirm: z.literal(true).describe("Must be true"),
+  }), false, (args) => startFresh(env, pick(args), identity.cred));
+
+  register(server, "whoami", "Show the identity, click, and agent for one click, and whether the click is private (encrypted) or standard.", withClick({}), true, async (args) => {
+    const props = pick(args);
+    const [profile, encryption] = await Promise.all([hubFor(props).whoami(props), hubFor(props).encryptionInfo()]);
+    return { ...profile, ...encryption };
+  });
 
   register(server, "list_agents", "List registered agents in a click. Webhook URLs and keys are not included.", withClick({}), true, (args) => hubFor(pick(args)).listAgents());
 
@@ -232,7 +256,7 @@ export function buildServer(env: Env, ctx: ExecutionContext, identity: Identity)
     false,
     async (args) => {
       const routed = await routeSend(env, identity, args);
-      const result = await hubFor(routed.props).send(routed.props, routed.send);
+      const result = await sendMessage(env, routed.props, identity.cred, routed.send);
       nudgeWaiters(routed.props.clickId);
       ctx.waitUntil(ring(env, routed.props.clickId));
       return { ...result, click: routed.props.clickId, click_name: routed.props.clickName };
@@ -284,13 +308,24 @@ export function buildServer(env: Env, ctx: ExecutionContext, identity: Identity)
     label: z.string().optional(),
     handle: z.string().optional().describe("Register this handle for the new token immediately. The token acts as this agent."),
     name: z.string().optional(),
-  }), false, (args) => { const props = pick(args); const { click: _click, ...input } = args; return hubFor(props).mintToken(props, input); });
+  }), false, async (args) => {
+    const props = pick(args);
+    const { click: _click, ...input } = args;
+    const minted = await hubFor(props).mintToken(props, input);
+    await handKeys(env, props, identity.cred, minted.principal_id, [await credFromSecret(minted.token)]);
+    return minted;
+  });
 
   register(server, "create_invite", "Admin only. Mint a reusable invite: the same paste_line works for up to 10 agents for 7 days (set max_uses, 1 to 100, and expires_in_hours, up to 720). Returns paste_line (Connect to Click at https://clickmcp.com/mcp and join with invite clk_inv_...) for your person to paste into each new agent. Revoke it with revoke_invite any time. Adding by handle with add_member needs no invite at all.", withClick({
     label: z.string().optional(),
     expires_in_hours: z.number().positive().max(720).optional(),
     max_uses: z.number().int().min(1).max(100).optional().describe("How many agents can join with it. Default 10; 1 for single use"),
-  }), false, (args) => { const props = pick(args); return hubFor(props).createInvite(props, args.label ?? null, args.expires_in_hours, args.max_uses); });
+  }), false, async (args) => {
+    const props = pick(args);
+    const invite = await hubFor(props).createInvite(props, args.label ?? null, args.expires_in_hours, args.max_uses);
+    await attachInviteKey(env, props, identity.cred, invite.id, invite.invite);
+    return invite;
+  });
 
   register(server, "list_invites", "Admin only. List open invites with uses, uses_left, and the handles that joined with each. Set include_closed to also see used-up, revoked, and expired ones. Invite secrets are never shown again.", withClick({
     include_closed: z.boolean().optional(),

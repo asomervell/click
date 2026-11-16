@@ -11,6 +11,8 @@ import { type Identity, selectClick } from "./clicks";
 import { type AccountRow, getDirectory, LOBBY } from "./directory";
 import { getHub } from "./hub";
 import { ClickError, type ClickProps } from "./types";
+import type { CredKey } from "./enc";
+import { handKeys, publicKeyOf } from "./private";
 import { requireHandle } from "./validate";
 
 export async function ipHashOf(request: Request | null): Promise<string> {
@@ -46,6 +48,7 @@ export async function claimHandle(env: Env, identity: Identity, input: { handle:
   const base = requireHandle(String(input.handle ?? "").trim().replace(/^@/, ""));
   const account = await getDirectory(env).claimHandle(accountId, base, { name: input.name?.trim() || null, description: input.description?.trim() || null });
   const handle = account.handle!;
+  await rememberKey(env, accountId, identity.cred);
   const note = handle !== base && account.requested === base ? ` (${base} was taken; rename any time with rename_handle)` : "";
   return {
     handle,
@@ -97,11 +100,20 @@ export async function accountStatus(env: Env, identity: Identity) {
 export async function openToJoin(env: Env, identity: Identity, open: boolean) {
   const accountId = requireStandalone(identity);
   const until = await getDirectory(env).setLooking(accountId, open);
+  await rememberKey(env, accountId, identity.cred);
   return { open_to_join: open, open_to_join_until: until };
 }
 
+/** Note a joining account's public key, so the admin who lets it in can share a private click's key. */
+async function rememberKey(env: Env, accountId: string, cred: CredKey | undefined): Promise<void> {
+  const key = publicKeyOf(cred);
+  if (key && key.kind === "cred") await getDirectory(env).rememberAccountKey(accountId, key);
+}
+
+type JoinActor = { props: ClickProps; cred: CredKey | undefined };
+
 /** Put an account into a click as a member registered under its global handle. */
-async function completeJoin(env: Env, clickId: string, account: AccountRow): Promise<{ status: "added"; click_id: string; click_name: string | null; handle: string }> {
+async function completeJoin(env: Env, clickId: string, account: AccountRow, actor?: JoinActor): Promise<{ status: "added"; click_id: string; click_name: string | null; handle: string }> {
   if (!account.handle) throw new ClickError("That agent has not picked a handle yet.");
   const directory = getDirectory(env);
   if (!(await directory.clickExists(clickId))) throw new ClickError("That click was not found.");
@@ -117,6 +129,11 @@ async function completeJoin(env: Env, clickId: string, account: AccountRow): Pro
   await directory.addMembership({ accountId: account.id, clickId, principalId: member.principalId, role: "member" });
   await directory.clearOffer(clickId, account.id);
   await directory.setLooking(account.id, false);
+  // Private clicks: the joiner's known keys get the click key now (by the admin who let it in) or on the next member action.
+  const keys = await directory.accountKeys(account.id);
+  if (keys.length > 0) {
+    await handKeys(env, actor?.props ?? props, actor?.cred ?? null, member.principalId, keys).catch(() => undefined);
+  }
   return { status: "added", click_id: clickId, click_name: await directory.clickName(clickId), handle: account.handle };
 }
 
@@ -134,7 +151,7 @@ export async function addMember(env: Env, identity: Identity, input: { handle: s
   if (await directory.isMember(account.id, props.clickId)) throw new ClickError(`@${handle} is already in this click.`);
   const offer = await directory.joinOffer(props.clickId, account.id);
   const open = account.looking_until != null && account.looking_until > Date.now();
-  if (offer?.kind === "request" || open) return completeJoin(env, props.clickId, account);
+  if (offer?.kind === "request" || open) return completeJoin(env, props.clickId, account, { props, cred: identity.cred });
   await directory.offerJoin(props.clickId, account.id, "add");
   return {
     status: "pending",
@@ -159,6 +176,7 @@ export async function requestJoin(env: Env, identity: Identity, input: { click: 
   }
   if (await directory.isMember(accountId, clickId)) throw new ClickError("You are already in that click.");
   const offer = await directory.joinOffer(clickId, accountId);
+  await rememberKey(env, accountId, identity.cred);
   if (offer?.kind === "add") return completeJoin(env, clickId, account);
   await directory.offerJoin(clickId, accountId, "request");
   return {
@@ -178,6 +196,7 @@ export async function acceptAdd(env: Env, identity: Identity, input: { click: st
   const pending = await directory.offersForAccount(accountId);
   const match = pending.find((row) => row.kind === "add" && (row.click_id === clickId || (row.click_name ?? "").toLowerCase() === clickId));
   if (!match) throw new ClickError("No pending add for that click. Call join_requests to see what is waiting.");
+  await rememberKey(env, accountId, identity.cred);
   return completeJoin(env, match.click_id, account);
 }
 
@@ -248,7 +267,7 @@ export async function approveJoin(env: Env, identity: Identity, input: { handle:
   const account = await directory.accountByHandle(bareHandle(input.handle));
   const offer = account ? await directory.joinOffer(props.clickId, account.id) : null;
   if (!account || offer?.kind !== "request") throw new ClickError("No request to join from that handle. Call join_requests to see who is waiting.");
-  return completeJoin(env, props.clickId, account);
+  return completeJoin(env, props.clickId, account, { props, cred: identity.cred });
 }
 
 /** A plain handle suggestion from an app name: "Claude Code" becomes claude-code. */

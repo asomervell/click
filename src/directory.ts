@@ -26,6 +26,8 @@ export type ResolvedCredential = {
   clickId: string;
   principalId: string;
   role: Role;
+  /** True when the credential is the click's admin key itself. */
+  adminKey?: boolean;
 };
 
 export function getDirectory(env: Env): DurableObjectStub<ClickDirectory> {
@@ -178,6 +180,13 @@ export class ClickDirectory extends DurableObject<Env> {
         created_at INTEGER NOT NULL
       );
       CREATE INDEX IF NOT EXISTS account_log_ip ON account_log (ip_hash, created_at);
+      CREATE TABLE IF NOT EXISTS account_keys (
+        account_id TEXT NOT NULL,
+        key_id TEXT NOT NULL,
+        public_key TEXT NOT NULL,
+        seen_at INTEGER NOT NULL,
+        PRIMARY KEY (account_id, key_id)
+      );
     `);
   }
 
@@ -288,6 +297,7 @@ export class ClickDirectory extends DurableObject<Env> {
     this.ctx.storage.transactionSync(() => {
       this.ctx.storage.sql.exec(`DELETE FROM api_tokens WHERE principal_id = ? AND click_id = 'lobby'`, accountId);
       this.ctx.storage.sql.exec(`DELETE FROM join_offers WHERE account_id = ?`, accountId);
+      this.ctx.storage.sql.exec(`DELETE FROM account_keys WHERE account_id = ?`, accountId);
       this.ctx.storage.sql.exec(`DELETE FROM handle_holds WHERE account_id = ?`, accountId);
       this.ctx.storage.sql.exec(`DELETE FROM handle_renames WHERE account_id = ?`, accountId);
       this.ctx.storage.sql.exec(`DELETE FROM memberships WHERE account_id = ?`, accountId);
@@ -300,6 +310,30 @@ export class ClickDirectory extends DurableObject<Env> {
   async allAccounts(): Promise<Array<{ id: string; handle: string | null; created_at: number; clicks: number }>> {
     const rows = this.ctx.storage.sql.exec<{ id: string; handle: string | null; created_at: number }>(`SELECT id, handle, created_at FROM accounts ORDER BY created_at`).toArray();
     return Promise.all(rows.map(async (row) => ({ ...row, clicks: await this.liveMembershipCount(row.id) })));
+  }
+
+  /**
+   * Public keys of an account's connections (never private keys), so an admin who approves or adds
+   * the account to a private click can hand it the click key at once. The newest few are kept.
+   */
+  async rememberAccountKey(accountId: string, key: { id: string; pub: string }): Promise<void> {
+    if (!/^[0-9a-f]{32}$/.test(key.id) || key.pub.length > 64) return;
+    this.ctx.storage.sql.exec(
+      `INSERT INTO account_keys (account_id, key_id, public_key, seen_at) VALUES (?, ?, ?, ?)
+       ON CONFLICT (account_id, key_id) DO UPDATE SET seen_at = excluded.seen_at`,
+      accountId, key.id, key.pub, Date.now(),
+    );
+    this.ctx.storage.sql.exec(
+      `DELETE FROM account_keys WHERE account_id = ? AND key_id NOT IN (SELECT key_id FROM account_keys WHERE account_id = ? ORDER BY seen_at DESC LIMIT 5)`,
+      accountId, accountId,
+    );
+  }
+
+  async accountKeys(accountId: string): Promise<Array<{ id: string; pub: string; kind: "cred" }>> {
+    return this.ctx.storage.sql
+      .exec<{ key_id: string; public_key: string }>(`SELECT key_id, public_key FROM account_keys WHERE account_id = ? ORDER BY seen_at DESC`, accountId)
+      .toArray()
+      .map((row) => ({ id: row.key_id, pub: row.public_key, kind: "cred" as const }));
   }
 
   async setLooking(accountId: string, open: boolean): Promise<number | null> {
@@ -557,7 +591,7 @@ export class ClickDirectory extends DurableObject<Env> {
         keyHash,
       )
       .toArray()[0];
-    if (click) return { clickId: click.id, principalId: click.admin_principal, role: "admin" };
+    if (click) return { clickId: click.id, principalId: click.admin_principal, role: "admin", adminKey: true };
     const token = this.ctx.storage.sql
       .exec<{ click_id: string; principal_id: string; role: Role }>(
         `SELECT click_id, principal_id, role FROM api_tokens WHERE token_hash = ? AND revoked_at IS NULL`,
