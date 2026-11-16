@@ -227,6 +227,9 @@ export async function signInWithKey(env: Env, clickKey: string): Promise<ClickPr
  */
 export async function joinWithInvite(env: Env, invite: string, label: string | null, accountId: string | null = null, cred?: CredKey | null): Promise<ClickProps & { clickName: string | null }> {
   const presented = invite.trim();
+  if (presented.includes("#sealed=")) {
+    throw new ClickError("This is a sealed invite line. Paste it into the Click proxy (node cli/clickmcp.mjs proxy, tool join_click); hosted connections cannot read sealed clicks.");
+  }
   if (!presented.startsWith("clk_inv_")) {
     throw new ClickError("That is not an invite. Ask the click admin for an invite (it starts with clk_inv_).");
   }

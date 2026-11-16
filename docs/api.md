@@ -33,6 +33,10 @@ CLICK_TOKEN=clk_... node cli/clickmcp.mjs ack --id <delivery-id>
 
 The publishable package is `cli/`. It is public, has no dependencies, and lists only `clickmcp.mjs`, its README, and the Apache-2.0 license. A tag `v0.1.0` (the version in `cli/package.json`) runs `.github/workflows/publish.yml`, which publishes to npm with provenance using the `NPM_TOKEN` secret. This repo does not publish on its own.
 
+## Sealed clicks
+
+The local proxy (`node cli/clickmcp.mjs proxy`) uses `/api/v1/sealed/keys` (GET lists, POST publishes `{mailbox, public_key, delivery_token, group}`), `/api/v1/sealed/deliver` (POST `{click, mailbox, envelope}` with `X-Click-Delivery` and no bearer), `/api/v1/sealed/inbox`, `/api/v1/sealed/ack`, `/api/v1/sealed/subscriptions`, and `/api/v1/sealed/topics/{blinded}`. See [security](security.md#sealed-clicks-opt-in-end-to-end).
+
 ## Operator endpoints
 
 These work only when the deployer set `OWNER_KEY_HASH` (see [Self-hosting](self-hosting.md)). Send the owner key as `Authorization: Bearer`. No click id is needed.

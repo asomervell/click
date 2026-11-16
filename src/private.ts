@@ -5,7 +5,7 @@
  * shares the key with members who lack it, rotates it after removals, and encrypts old
  * plaintext in batches. The hub only ever stores ciphertext and wrapped keys.
  */
-import { getHub, type KeyState, type PublicKeyInput } from "./hub";
+import { getHub, type EncMode, type KeyState, type PublicKeyInput } from "./hub";
 import {
   credFromSecret,
   type CredKey,
@@ -21,7 +21,7 @@ import {
   wrapToSecret,
 } from "./enc";
 import { sha256Hex } from "./crypto";
-import { ClickError, PRIVATE_SEND_ERROR, type ClickProps } from "./types";
+import { ClickError, PRIVATE_SEND_ERROR, SEALED_SEND_ERROR, type ClickProps } from "./types";
 import { requireText } from "./validate";
 
 export const LOCKED_TEXT = "[Encrypted. This connection has no key for this private click yet. Another member's next action shares it; try again shortly. If this keeps happening, reconnect Click.]";
@@ -39,14 +39,14 @@ function chainAad(clickId: string, epoch: number): string {
 }
 
 // Per-isolate memo of which clicks are private, so standard clicks pay nothing on send.
-const modes = new Map<string, { mode: "standard" | "private"; at: number }>();
+const modes = new Map<string, { mode: EncMode; at: number }>();
 const MODE_TTL_MS = 10_000;
 
 export function forgetMode(clickId: string): void {
   modes.delete(clickId);
 }
 
-async function clickMode(env: Env, clickId: string): Promise<"standard" | "private"> {
+export async function clickMode(env: Env, clickId: string): Promise<EncMode> {
   const hit = modes.get(clickId);
   if (hit && Date.now() - hit.at < MODE_TTL_MS) return hit.mode;
   const { mode } = await getHub(env, clickId).encMode();
@@ -164,7 +164,9 @@ export async function sendMessage(env: Env, props: ClickProps, cred: CredKey | u
     const ct = await sealText(ring.current, text, messageAad(props.clickId, eventId, createdAt));
     return hub.send(props, { ...body, text: "", sealed: { epoch: ring.epoch, ct, event_id: eventId, created_at: createdAt } }, publicKeyOf(cred));
   };
-  if ((await clickMode(env, props.clickId)) === "private") return encrypted();
+  const mode = await clickMode(env, props.clickId);
+  if (mode === "sealed") throw new ClickError(SEALED_SEND_ERROR);
+  if (mode === "private") return encrypted();
   try {
     return await hub.send(props, body, publicKeyOf(cred));
   } catch (error) {
@@ -286,9 +288,31 @@ export async function makePrivateAtCreate(env: Env, created: { click_id: string;
   return { encryption: "private", key_epoch: result.key_epoch };
 }
 
+/** Which mode a request asked for: "private", "sealed", or (default) "standard". */
+export function encryptionChoice(value: unknown): EncMode {
+  if (value === "sealed") return "sealed";
+  return wantsPrivate(value) ? "private" : "standard";
+}
+
+const SEALED_NOTE = "Sealed: messages are end-to-end encrypted by each member's local Click proxy (node cli/clickmcp.mjs proxy). Click stores only padded ciphertext in blinded mailboxes and cannot read or attribute messages. Hosted connections (ChatGPT, Claude, Grok Bot without the proxy) can no longer send or read new messages here. The first admin proxy sets up the group; others join with a sealed invite line from a member's proxy.";
+
+/** Admin: make a click sealed. Earlier messages stay as they are (standard or private). */
+export async function enableSealed(env: Env, props: ClickProps): Promise<{ encryption: "sealed"; note: string }> {
+  await getHub(env, props.clickId).setEncMode(props, "sealed");
+  forgetMode(props.clickId);
+  return { encryption: "sealed", note: SEALED_NOTE };
+}
+
+/** Apply a set_encryption / PATCH {encryption} request. */
+export async function applyEncryption(env: Env, props: ClickProps, cred: CredKey | undefined | null, value: unknown) {
+  const mode = encryptionChoice(value);
+  if (mode === "sealed") return enableSealed(env, props);
+  return mode === "private" ? enablePrivate(env, props, cred) : disablePrivate(env, props);
+}
+
 export function wantsPrivate(value: unknown): boolean {
   if (value == null || value === "" || value === false) return false;
   if (value === true || value === "private" || value === "on" || value === "true") return true;
   if (value === "standard") return false;
-  throw new ClickError("encryption must be \"private\" or \"standard\".");
+  throw new ClickError("encryption must be \"standard\", \"private\", or \"sealed\".");
 }
