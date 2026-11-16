@@ -131,7 +131,7 @@ export async function createClick(origin = LOCAL, extra: Record<string, unknown>
 export let lastConnectPage = "";
 export let lastConnectRefresh = "";
 
-export async function signIn(origin: string, input: { email?: string; key?: string; originHeader?: string | null; agentHandle?: string }): Promise<string> {
+export async function signIn(origin: string, input: { email?: string; key?: string; originHeader?: string | null; agentHandle?: string; encryption?: boolean }): Promise<string> {
   const registered = await SELF.fetch(new Request(`${origin}/register`, {
     method: "POST",
     headers: { "content-type": "application/json" },
@@ -171,6 +171,7 @@ export async function signIn(origin: string, input: { email?: string; key?: stri
   form.set("csrf", csrf);
   form.set("mode", input.email ? "create" : input.key ? "join" : "connect");
   if (input.email) form.set("email", input.email);
+  if (input.encryption) form.set("encryption", "private");
   if (input.key) form.set("key", input.key);
   if (input.agentHandle) form.set("agent_handle", input.agentHandle);
   form.set("decision", "approve");
@@ -199,6 +200,7 @@ export async function signIn(origin: string, input: { email?: string; key?: stri
     verify.set("pending_id", pendingId);
     verify.set("email", input.email);
     verify.set("code", lastCode(input.email));
+    if (codePage.includes('name="encryption" value="private"')) verify.set("encryption", "private");
     verify.set("decision", "approve");
     verify.append("scope", "click");
     verify.append("scope", "offline_access");

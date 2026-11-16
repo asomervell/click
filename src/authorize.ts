@@ -9,6 +9,8 @@ import { createStandalone, suggestHandle } from "./agents";
 import { getDirectory } from "./directory";
 import { type ClickHandoff, joinWithInvite, signInWithKey, startCreateClick, verifyCreateClick } from "./clicks";
 import { ClickError, type ClickProps } from "./types";
+import { credFromSeed, newSeed } from "./enc";
+import { adminKeyHandoff, wantsPrivate } from "./private";
 import { cleanLabel } from "./validate";
 import { escapeHtml, handoffHtml, htmlResponse, page } from "./pages";
 import { providerOptions } from "./provider";
@@ -115,6 +117,7 @@ async function showConsent(request: Request, api: OAuthHelpers): Promise<Respons
       <input id="email" name="email" type="email" autocomplete="email">
       <label for="click_name">Click name (optional)</label>
       <input id="click_name" name="click_name" maxlength="60" autocomplete="off">
+      <label class="check"><input type="checkbox" name="encryption" value="private"> Private: encrypt messages with keys only members hold</label>
       <p><button name="decision" value="approve">Create and connect</button></p>
     </form>
     </details>
@@ -166,27 +169,33 @@ async function submitConsent(request: Request, env: Env, api: OAuthHelpers): Pro
   let handoff: ClickHandoff | null = null;
   let connectedHandle: string | null = null;
   const origin = new URL(request.url).origin;
+  // This grant's own key: its seed lives only in the encrypted grant props.
+  const seed = newSeed();
+  const cred = await credFromSeed(seed, "cred");
+  const encryption = wantsPrivate(form.get("encryption"));
   try {
     if (mode === "connect") {
       principal = await createStandalone(env, request);
       const wanted = suggestHandle(String(form.get("agent_handle") ?? "") || "agent");
       connectedHandle = (await getDirectory(env).claimHandle(principal.principalId, wanted, { name: null, description: null })).handle;
     } else if (mode === "verify") {
-      const created = await verifyCreateClick(env, String(form.get("pending_id") ?? ""), String(form.get("code") ?? ""), origin);
+      const created = await verifyCreateClick(env, String(form.get("pending_id") ?? ""), String(form.get("code") ?? ""), origin, { encryption, cred, sameGrant: true });
       principal = { principalId: created.principal_id, clickId: created.click_id, role: "admin" };
       handoff = created;
     } else if (mode === "create") {
-      const started = await startCreateClick(env, { email, name: form.get("click_name"), request, accountId: null, origin });
+      const started = await startCreateClick(env, { email, name: form.get("click_name"), request, accountId: null, origin, encryption, cred });
       if (started.status === "verification_sent") {
-        return codeForm({ handle, csrf: presented, pendingId: started.pending_id, email: started.email, scopes, label, message: null });
+        return codeForm({ handle, csrf: presented, pendingId: started.pending_id, email: started.email, scopes, label, encryption, message: null });
       }
       principal = { principalId: started.principal_id, clickId: started.click_id, role: "admin" };
       handoff = started;
     } else if (key.startsWith("clk_inv_")) {
-      const joined = await joinWithInvite(env, key, label);
+      const joined = await joinWithInvite(env, key, label, null, cred);
       principal = { principalId: joined.principalId, clickId: joined.clickId, role: joined.role };
     } else if (key) {
       principal = await signInWithKey(env, key);
+      // Private clicks: the admin key unlocks the click for this new grant, and gets its own recovery copy.
+      await adminKeyHandoff(env, principal, key, cred);
     } else {
       throw new ClickError("Paste the invite you got from the click admin.");
     }
@@ -202,6 +211,7 @@ async function submitConsent(request: Request, env: Env, api: OAuthHelpers): Pro
         email: String(form.get("email") ?? ""),
         scopes,
         label,
+        encryption,
         message,
       });
     }
@@ -215,7 +225,7 @@ async function submitConsent(request: Request, env: Env, api: OAuthHelpers): Pro
     userId: principal.principalId,
     metadata: { clickId: principal.clickId },
     scope: approved.request.scope,
-    props: { principalId: principal.principalId, clickId: principal.clickId, role: principal.role },
+    props: { principalId: principal.principalId, clickId: principal.clickId, role: principal.role, cred: { seed, kind: "cred" } },
   });
   approved.headers.append("Set-Cookie", clearCsrfCookie(csrfName));
   if (handoff) {
@@ -265,6 +275,7 @@ function retry(handle: string, csrf: string, message: string): Response {
       <input id="email" name="email" type="email">
       <label for="click_name">Click name (optional)</label>
       <input id="click_name" name="click_name" maxlength="60">
+      <label class="check"><input type="checkbox" name="encryption" value="private"> Private: encrypt messages with keys only members hold</label>
       <label for="key">Invite from the click's admin</label>
       <input id="key" name="key" type="password">
       <p><button name="decision" value="approve">Allow</button></p>
@@ -280,6 +291,7 @@ function codeForm(input: {
   email: string;
   scopes: string[];
   label: string | null;
+  encryption?: boolean;
   message: string | null;
 }): Response {
   const scopeFields = (input.scopes.length > 0 ? input.scopes : ["click"])
@@ -295,6 +307,7 @@ function codeForm(input: {
       <input type="hidden" name="pending_id" value="${escapeHtml(input.pendingId)}">
       <input type="hidden" name="email" value="${escapeHtml(input.email)}">
       <input type="hidden" name="label" value="${escapeHtml(input.label ?? "")}">
+      ${input.encryption ? `<input type="hidden" name="encryption" value="private">` : ""}
       ${scopeFields}
       <label for="code">Code</label>
       <input id="code" name="code" inputmode="numeric" pattern="[0-9]{6}" maxlength="6" autocomplete="one-time-code" required>

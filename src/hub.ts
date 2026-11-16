@@ -1,7 +1,7 @@
 import { DurableObject } from "cloudflare:workers";
 import { randomToken, sha256Hex } from "./crypto";
 import { getDirectory } from "./directory";
-import { ClickError, inviteLine, type ClickProps, type Profile, type PublicAgent, type Role } from "./types";
+import { ClickError, inviteLine, PRIVATE_SEND_ERROR, type ClickProps, type Profile, type PublicAgent, type Role } from "./types";
 import {
   clampLimit,
   parseWebhookUrl,
@@ -31,7 +31,30 @@ type SendInput = {
   topic?: string;
   broadcast?: boolean;
   reply_to?: string;
+  /** Private clicks: the body, already encrypted in the Worker. text is then empty. */
+  sealed?: SealedBody;
 };
+
+/** An encrypted message body. event_id and created_at are bound into the ciphertext. */
+export type SealedBody = { epoch: number; ct: string; event_id: string; created_at: number };
+
+/** A credential's public key, registered so members can share the click key with it. */
+export type PublicKeyInput = { id: string; pub: string; kind: "cred" | "admin" };
+
+/** Everything the Worker needs to unlock a private click for one credential, in one call. */
+export type KeyState = {
+  mode: "standard" | "private";
+  epoch: number;
+  slot: string | null;
+  chain: Array<{ epoch: number; wrapped: string }>;
+  keys: Array<{ key_id: string; public_key: string; slotted: boolean }>;
+  rotate: boolean;
+  plaintext: number;
+};
+
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+const KEY_ID = /^[0-9a-f]{32}$/;
+const MAX_CT = 16_000;
 
 /** What a caller may know about one message it can see, for routing a reply. */
 export type LocatedMessage = {
@@ -209,6 +232,35 @@ export class ClickHub extends DurableObject<Env> {
     `);
     // Event payloads no longer carry message text. Strip it from any queued rows written before that.
     this.stripQueuedEventText();
+    // Private clicks (opt-in): encrypted bodies, member key slots, and the chain of older keys.
+    this.addColumn("click_meta", "enc_mode", "TEXT NOT NULL DEFAULT 'standard'");
+    this.addColumn("click_meta", "enc_epoch", "INTEGER NOT NULL DEFAULT 0");
+    this.addColumn("click_meta", "enc_rotate", "INTEGER NOT NULL DEFAULT 0");
+    this.addColumn("events", "enc", "INTEGER NOT NULL DEFAULT 0");
+    this.addColumn("events", "key_epoch", "INTEGER");
+    this.addColumn("events", "body_ct", "TEXT");
+    this.addColumn("invites", "key_wrap", "TEXT");
+    this.addColumn("invites", "key_epoch", "INTEGER");
+    this.addColumn("principals", "removed_at", "INTEGER");
+    this.ctx.storage.sql.exec(`
+      CREATE TABLE IF NOT EXISTS member_keys (
+        key_id TEXT PRIMARY KEY,
+        principal_id TEXT NOT NULL,
+        kind TEXT NOT NULL,
+        public_key TEXT NOT NULL,
+        created_at INTEGER NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS key_slots (
+        epoch INTEGER NOT NULL,
+        key_id TEXT NOT NULL,
+        wrapped TEXT NOT NULL,
+        PRIMARY KEY (epoch, key_id)
+      );
+      CREATE TABLE IF NOT EXISTS epoch_keys (
+        epoch INTEGER PRIMARY KEY,
+        wrapped TEXT NOT NULL
+      );
+    `);
   }
 
   private stripQueuedEventText(): void {
@@ -587,24 +639,40 @@ export class ClickHub extends DurableObject<Env> {
       .toArray();
   }
 
-  async send(props: ClickProps, input: SendInput): Promise<{
+  async send(props: ClickProps, input: SendInput, key?: PublicKeyInput | null): Promise<{
+    event_id: string;
+    kind: "dm" | "topic" | "broadcast";
+    recipients: string[];
+  }> {
+    if (key) this.rememberKey(props.principalId, key);
+    return this.sendInternal(props, input, false);
+  }
+
+  private async sendInternal(props: ClickProps, input: SendInput, system: boolean): Promise<{
     event_id: string;
     kind: "dm" | "topic" | "broadcast";
     recipients: string[];
   }> {
     this.noteClick(props.clickId);
     const from = this.requireAgent(props.principalId);
+    const enc = this.encMeta();
+    let sealed: SealedBody | null = null;
+    if (input.sealed) {
+      sealed = this.checkSealed(input.sealed, enc.epoch);
+    } else if (enc.mode === "private" && !system) {
+      throw new ClickError(PRIVATE_SEND_ERROR);
+    }
     const since = Date.now() - 60_000;
     const recent = this.ctx.storage.sql
       .exec<{ n: number }>(`SELECT COUNT(*) AS n FROM events WHERE from_agent_id = ? AND created_at > ?`, from.id, since)
       .one().n;
     if (recent >= 30) throw new ClickError("Too many messages in the last minute. Wait and try again.");
-    const text = requireText(input.text);
+    const text = sealed ? "" : requireText(input.text);
     const replyTo = input.reply_to ? this.locateRow(from.id, input.reply_to)?.event_id ?? null : null;
     const chosen = [input.to?.trim(), input.topic?.trim(), input.broadcast ? "broadcast" : ""].filter(Boolean);
     if (chosen.length !== 1) throw new ClickError("Set exactly one of to, topic, or broadcast.");
-    const now = Date.now();
-    const eventId = crypto.randomUUID();
+    const now = sealed ? sealed.created_at : Date.now();
+    const eventId = sealed ? sealed.event_id : crypto.randomUUID();
     let kind: "dm" | "topic" | "broadcast";
     let topic: string | null = null;
     let toAgentId: string | null = null;
@@ -632,7 +700,7 @@ export class ClickHub extends DurableObject<Env> {
     const deliveryIds = new Map<string, string>();
     this.ctx.storage.transactionSync(() => {
       this.ctx.storage.sql.exec(
-        `INSERT INTO events (id, kind, topic, from_agent_id, to_agent_id, text, created_at, reply_to) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO events (id, kind, topic, from_agent_id, to_agent_id, text, created_at, reply_to, enc, key_epoch, body_ct) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         eventId,
         kind,
         topic,
@@ -641,6 +709,9 @@ export class ClickHub extends DurableObject<Env> {
         text,
         now,
         replyTo,
+        sealed ? 1 : 0,
+        sealed?.epoch ?? null,
+        sealed?.ct ?? null,
       );
       for (const recipient of recipients) {
         const wake = Boolean(recipient.webhook_url && recipient.webhook_key);
@@ -671,6 +742,7 @@ export class ClickHub extends DurableObject<Env> {
   async inbox(props: ClickProps, limit: number | undefined, options: {
     order?: "asc" | "desc";
     olderThan?: { t: number; id: string } | null;
+    key?: PublicKeyInput | null;
   } = {}): Promise<{
     messages: Array<{
       id: string;
@@ -681,8 +753,10 @@ export class ClickHub extends DurableObject<Env> {
       text: string;
       created_at: number;
       reply_to: string | null;
+      sealed?: { epoch: number; ct: string };
     }>;
   }> {
+    if (options.key) this.rememberKey(props.principalId, options.key);
     const agent = this.requireAgent(props.principalId);
     const desc = options.order === "desc";
     const cursor = desc ? options.olderThan ?? null : null;
@@ -696,8 +770,11 @@ export class ClickHub extends DurableObject<Env> {
         text: string;
         created_at: number;
         reply_to: string | null;
+        enc: number;
+        key_epoch: number | null;
+        body_ct: string | null;
       }>(
-        `SELECT d.id, d.event_id, COALESCE(s.handle, '(left)') AS from_handle, e.kind, e.topic, e.text, e.created_at, e.reply_to
+        `SELECT d.id, d.event_id, COALESCE(s.handle, '(left)') AS from_handle, e.kind, e.topic, e.text, e.created_at, e.reply_to, e.enc, e.key_epoch, e.body_ct
          FROM deliveries d
          JOIN events e ON e.id = d.event_id
          LEFT JOIN agents s ON s.id = e.from_agent_id
@@ -722,6 +799,7 @@ export class ClickHub extends DurableObject<Env> {
         text: row.text,
         created_at: row.created_at,
         reply_to: row.reply_to,
+        ...sealedOf(row),
       }));
     return { messages };
   }
@@ -861,6 +939,7 @@ export class ClickHub extends DurableObject<Env> {
     before?: number;
     before_id?: string;
     limit?: number;
+    key?: PublicKeyInput | null;
   }): Promise<{
     events: Array<{
       id: string;
@@ -871,8 +950,10 @@ export class ClickHub extends DurableObject<Env> {
       text: string;
       created_at: number;
       reply_to: string | null;
+      sealed?: { epoch: number; ct: string };
     }>;
   }> {
+    if (input.key) this.rememberKey(props.principalId, input.key);
     const agent = this.requireAgent(props.principalId);
     const limit = clampLimit(input.limit);
     const before = input.before ?? Number.MAX_SAFE_INTEGER;
@@ -886,13 +967,16 @@ export class ClickHub extends DurableObject<Env> {
       text: string;
       created_at: number;
       reply_to: string | null;
+      enc: number;
+      key_epoch: number | null;
+      body_ct: string | null;
     };
     let rows: HistoryRow[];
     if (input.topic?.trim()) {
       const topic = requireHandle(input.topic, "topic");
       rows = this.ctx.storage.sql
         .exec<HistoryRow>(
-          `SELECT e.id, e.kind, e.topic, COALESCE(s.handle, '(left)') AS from_handle, t.handle AS to_handle, e.text, e.created_at, e.reply_to
+          `SELECT e.id, e.kind, e.topic, COALESCE(s.handle, '(left)') AS from_handle, t.handle AS to_handle, e.text, e.created_at, e.reply_to, e.enc, e.key_epoch, e.body_ct
            FROM events e
            LEFT JOIN agents s ON s.id = e.from_agent_id
            LEFT JOIN agents t ON t.id = e.to_agent_id
@@ -910,7 +994,7 @@ export class ClickHub extends DurableObject<Env> {
       if (!other) throw new ClickError(`No agent named ${input.with.trim().toLowerCase()}.`);
       rows = this.ctx.storage.sql
         .exec<HistoryRow>(
-          `SELECT e.id, e.kind, e.topic, COALESCE(s.handle, '(left)') AS from_handle, t.handle AS to_handle, e.text, e.created_at, e.reply_to
+          `SELECT e.id, e.kind, e.topic, COALESCE(s.handle, '(left)') AS from_handle, t.handle AS to_handle, e.text, e.created_at, e.reply_to, e.enc, e.key_epoch, e.body_ct
            FROM events e
            LEFT JOIN agents s ON s.id = e.from_agent_id
            LEFT JOIN agents t ON t.id = e.to_agent_id
@@ -930,7 +1014,7 @@ export class ClickHub extends DurableObject<Env> {
     } else {
       rows = this.ctx.storage.sql
         .exec<HistoryRow>(
-          `SELECT e.id, e.kind, e.topic, COALESCE(s.handle, '(left)') AS from_handle, t.handle AS to_handle, e.text, e.created_at, e.reply_to
+          `SELECT e.id, e.kind, e.topic, COALESCE(s.handle, '(left)') AS from_handle, t.handle AS to_handle, e.text, e.created_at, e.reply_to, e.enc, e.key_epoch, e.body_ct
            FROM events e
            LEFT JOIN agents s ON s.id = e.from_agent_id
            LEFT JOIN agents t ON t.id = e.to_agent_id
@@ -958,6 +1042,7 @@ export class ClickHub extends DurableObject<Env> {
         text: row.text,
         created_at: row.created_at,
         reply_to: row.reply_to,
+        ...sealedOf(row),
       })),
     };
   }
@@ -1542,6 +1627,15 @@ export class ClickHub extends DurableObject<Env> {
       this.ctx.storage.sql.exec(`DELETE FROM agents WHERE id = ?`, agentId);
       this.ctx.storage.sql.exec(`DELETE FROM event_subs WHERE agent_id = ?`, agentId);
       this.ctx.storage.sql.exec(`DELETE FROM event_deliveries WHERE agent_id = ?`, agentId);
+      // Private clicks: the removed member's keys and slots go now, and the click key is
+      // replaced on the next member request (older keys stay readable through the chain).
+      this.ctx.storage.sql.exec(`DELETE FROM key_slots WHERE key_id IN (SELECT key_id FROM member_keys WHERE principal_id = ? AND kind = 'cred')`, principalId);
+      const dropped = this.ctx.storage.sql.exec(`DELETE FROM member_keys WHERE principal_id = ? AND kind = 'cred'`, principalId).rowsWritten;
+      // The admin principal keeps its admin-key recovery copy, so the admin key can still recover the click.
+      if (principalId !== this.meta()?.admin_principal) {
+        this.ctx.storage.sql.exec(`UPDATE principals SET removed_at = ? WHERE id = ?`, Date.now(), principalId);
+      }
+      if (dropped > 0) this.ctx.storage.sql.exec(`UPDATE click_meta SET enc_rotate = 1 WHERE id = 1 AND enc_epoch > 0`);
     });
   }
 
@@ -1619,9 +1713,278 @@ export class ClickHub extends DurableObject<Env> {
     });
     const others = this.ctx.storage.sql.exec<{ n: number }>(`SELECT COUNT(*) AS n FROM agents WHERE id != ?`, agent.id).one().n;
     if (others > 0) {
-      await this.send(props, { broadcast: true, text: `Click note: @${old} is now @${handle}. Same agent, same history; message it as @${handle}.` });
+      await this.sendInternal(props, { broadcast: true, text: `Click note: @${old} is now @${handle}. Same agent, same history; message it as @${handle}.` }, true);
     }
     return { old_handle: old, handle, click_id: props.clickId, click_name: click.name };
+  }
+
+  // ---------------------------------------------------------------------------
+  // Private clicks. The hub never sees a click key or plaintext of an encrypted body:
+  // it stores ciphertext, public keys, and data keys wrapped to those public keys.
+
+  private encMeta(): { mode: "standard" | "private"; epoch: number; rotate: boolean } {
+    const row = this.ctx.storage.sql
+      .exec<{ enc_mode: string; enc_epoch: number; enc_rotate: number }>(`SELECT enc_mode, enc_epoch, enc_rotate FROM click_meta WHERE id = 1`)
+      .toArray()[0];
+    return { mode: row?.enc_mode === "private" ? "private" : "standard", epoch: row?.enc_epoch ?? 0, rotate: (row?.enc_rotate ?? 0) === 1 };
+  }
+
+  private checkSealed(sealed: SealedBody, epoch: number): SealedBody {
+    if (epoch === 0 || sealed.epoch !== epoch) throw new ClickError("This click's key changed. Try again.");
+    if (typeof sealed.ct !== "string" || !sealed.ct.startsWith("v1.") || sealed.ct.length > MAX_CT) throw new ClickError("That encrypted message is not valid.");
+    if (!UUID.test(sealed.event_id)) throw new ClickError("That encrypted message is not valid.");
+    if (!Number.isInteger(sealed.created_at) || Math.abs(sealed.created_at - Date.now()) > 120_000) throw new ClickError("That encrypted message is not valid.");
+    const clash = this.ctx.storage.sql.exec<{ n: number }>(`SELECT COUNT(*) AS n FROM events WHERE id = ?`, sealed.event_id).one().n;
+    if (clash > 0) throw new ClickError("That encrypted message is not valid.");
+    return sealed;
+  }
+
+  /** Register a credential's public key for a live member. Keys of removed members are refused. */
+  private rememberKey(principalId: string, key: PublicKeyInput): boolean {
+    if (!KEY_ID.test(key.id) || typeof key.pub !== "string" || key.pub.length < 40 || key.pub.length > 64) return false;
+    const principal = this.ctx.storage.sql
+      .exec<{ removed_at: number | null }>(`SELECT removed_at FROM principals WHERE id = ?`, principalId)
+      .toArray()[0];
+    if (!principal || principal.removed_at != null) return false;
+    const kind = key.kind === "admin" ? "admin" : "cred";
+    if (kind === "admin" && principalId !== this.meta()?.admin_principal) return false;
+    this.ctx.storage.sql.exec(
+      `INSERT INTO member_keys (key_id, principal_id, kind, public_key, created_at) VALUES (?, ?, ?, ?, ?) ON CONFLICT (key_id) DO NOTHING`,
+      key.id, principalId, kind, key.pub, Date.now(),
+    );
+    return true;
+  }
+
+  /** Cheap: whether sends here must be encrypted. */
+  async encMode(): Promise<{ mode: "standard" | "private"; epoch: number }> {
+    const meta = this.encMeta();
+    return { mode: meta.mode, epoch: meta.epoch };
+  }
+
+  /** Register the caller's key (if given) and return what it needs to unlock and maintain this click's keys. */
+  async keyState(props: ClickProps, key: PublicKeyInput | null): Promise<KeyState> {
+    if (key) this.rememberKey(props.principalId, key);
+    const meta = this.encMeta();
+    const slot = key && meta.epoch > 0
+      ? this.ctx.storage.sql
+        .exec<{ wrapped: string }>(
+          `SELECT s.wrapped FROM key_slots s JOIN member_keys k ON k.key_id = s.key_id WHERE s.epoch = ? AND s.key_id = ? AND k.principal_id = ?`,
+          meta.epoch, key.id, props.principalId,
+        )
+        .toArray()[0]?.wrapped ?? null
+      : null;
+    const chain = slot
+      ? this.ctx.storage.sql.exec<{ epoch: number; wrapped: string }>(`SELECT epoch, wrapped FROM epoch_keys ORDER BY epoch`).toArray()
+      : [];
+    const keys = meta.epoch > 0 && slot
+      ? this.ctx.storage.sql
+        .exec<{ key_id: string; public_key: string; slotted: number }>(
+          `SELECT k.key_id, k.public_key, (s.key_id IS NOT NULL) AS slotted
+           FROM member_keys k
+           JOIN principals p ON p.id = k.principal_id AND p.removed_at IS NULL
+           LEFT JOIN key_slots s ON s.key_id = k.key_id AND s.epoch = ?`,
+          meta.epoch,
+        )
+        .toArray()
+        .map((row) => ({ key_id: row.key_id, public_key: row.public_key, slotted: row.slotted === 1 }))
+      : [];
+    const plaintext = meta.mode === "private" && slot
+      ? this.ctx.storage.sql.exec<{ n: number }>(`SELECT COUNT(*) AS n FROM events WHERE enc = 0`).one().n
+      : 0;
+    return { mode: meta.mode, epoch: meta.epoch, slot, chain, keys, rotate: meta.rotate, plaintext };
+  }
+
+  /** Public keys of every live member, for turning encryption on or starting fresh. Admin only. */
+  async memberKeys(props: ClickProps, key: PublicKeyInput | null): Promise<Array<{ key_id: string; public_key: string }>> {
+    this.assertAdmin(props.role);
+    if (key) this.rememberKey(props.principalId, key);
+    return this.ctx.storage.sql
+      .exec<{ key_id: string; public_key: string }>(
+        `SELECT k.key_id, k.public_key FROM member_keys k JOIN principals p ON p.id = k.principal_id AND p.removed_at IS NULL`,
+      )
+      .toArray();
+  }
+
+  /** Register a key for another principal of this click (the Worker hands keys over at join, mint, and admin-key sign-in). */
+  async registerKeyFor(principalId: string, key: PublicKeyInput): Promise<boolean> {
+    return this.rememberKey(principalId, key);
+  }
+
+  /** The caller must hold a slot for the current epoch to change keys. */
+  private requireSlot(principalId: string, keyId: string, epoch: number): void {
+    const row = this.ctx.storage.sql
+      .exec<{ n: number }>(
+        `SELECT COUNT(*) AS n FROM key_slots s JOIN member_keys k ON k.key_id = s.key_id WHERE s.epoch = ? AND s.key_id = ? AND k.principal_id = ?`,
+        epoch, keyId, principalId,
+      )
+      .one().n;
+    if (row === 0) throw new ClickError("This connection has no key for this click.");
+  }
+
+  private insertSlots(epoch: number, slots: Array<{ key_id: string; wrapped: string }>): number {
+    let n = 0;
+    for (const slot of slots) {
+      if (!KEY_ID.test(slot.key_id) || typeof slot.wrapped !== "string" || !slot.wrapped.startsWith("x1.") || slot.wrapped.length > 1000) continue;
+      const known = this.ctx.storage.sql.exec<{ n: number }>(`SELECT COUNT(*) AS n FROM member_keys WHERE key_id = ?`, slot.key_id).one().n;
+      if (known === 0) continue;
+      this.ctx.storage.sql.exec(`INSERT INTO key_slots (epoch, key_id, wrapped) VALUES (?, ?, ?) ON CONFLICT (epoch, key_id) DO NOTHING`, epoch, slot.key_id, slot.wrapped);
+      n += 1;
+    }
+    return n;
+  }
+
+  /** Add slots for keys that lack one at the current epoch. The caller must already hold one. */
+  async shareKeys(props: ClickProps, input: { key_id: string; epoch: number; slots: Array<{ key_id: string; wrapped: string }> }): Promise<{ shared: number }> {
+    const meta = this.encMeta();
+    if (input.epoch !== meta.epoch) return { shared: 0 };
+    this.requireSlot(props.principalId, input.key_id, meta.epoch);
+    return { shared: this.insertSlots(meta.epoch, input.slots) };
+  }
+
+  /**
+   * Move to a new click key. First turn-on (epoch 0 to 1) is admin only; later rotations
+   * (after a member leaves) need a slot at the current epoch. chain holds every older key
+   * sealed under the new one, so history stays readable.
+   */
+  async newEpoch(props: ClickProps, input: {
+    key_id: string;
+    epoch: number;
+    slots: Array<{ key_id: string; wrapped: string }>;
+    chain: Array<{ epoch: number; wrapped: string }>;
+    mode?: "private";
+  }): Promise<{ epoch: number }> {
+    const meta = this.encMeta();
+    if (input.epoch !== meta.epoch + 1) throw new ClickError("This click's key changed. Try again.");
+    if (meta.epoch === 0 || input.mode) this.assertAdmin(props.role);
+    if (meta.epoch > 0) this.requireSlot(props.principalId, input.key_id, meta.epoch);
+    if (input.chain.length > 10_000) throw new ClickError("Too many keys.");
+    this.ctx.storage.transactionSync(() => {
+      this.ctx.storage.sql.exec(`DELETE FROM epoch_keys`);
+      for (const entry of input.chain) {
+        if (!Number.isInteger(entry.epoch) || entry.epoch < 1 || entry.epoch >= input.epoch || !entry.wrapped.startsWith("v1.")) continue;
+        this.ctx.storage.sql.exec(`INSERT INTO epoch_keys (epoch, wrapped) VALUES (?, ?)`, entry.epoch, entry.wrapped);
+      }
+      this.ctx.storage.sql.exec(`DELETE FROM key_slots`);
+      this.ctx.storage.sql.exec(`UPDATE invites SET key_wrap = NULL, key_epoch = NULL`);
+      this.insertSlots(input.epoch, input.slots);
+      this.ctx.storage.sql.exec(
+        `UPDATE click_meta SET enc_epoch = ?, enc_rotate = 0${input.mode ? ", enc_mode = 'private'" : ""} WHERE id = 1`,
+        input.epoch,
+      );
+    });
+    return { epoch: input.epoch };
+  }
+
+  /** Admin: turn encryption of new messages on or off. Off keeps existing keys so encrypted history stays readable. */
+  async setEncMode(props: ClickProps, mode: "standard" | "private"): Promise<{ mode: "standard" | "private"; epoch: number }> {
+    this.assertAdmin(props.role);
+    const meta = this.encMeta();
+    if (mode === "private" && meta.epoch === 0) throw new ClickError("This click has no key yet.");
+    this.ctx.storage.sql.exec(`UPDATE click_meta SET enc_mode = ? WHERE id = 1`, mode);
+    return { mode, epoch: meta.epoch };
+  }
+
+  /** Plaintext messages left to encrypt after turning encryption on. */
+  async plaintextBatch(props: ClickProps, limit: number): Promise<Array<{ id: string; text: string; created_at: number }>> {
+    const meta = this.encMeta();
+    if (meta.mode !== "private") return [];
+    if (!this.ctx.storage.sql.exec<{ n: number }>(`SELECT COUNT(*) AS n FROM principals WHERE id = ? AND removed_at IS NULL`, props.principalId).one().n) return [];
+    return this.ctx.storage.sql
+      .exec<{ id: string; text: string; created_at: number }>(`SELECT id, text, created_at FROM events WHERE enc = 0 ORDER BY created_at LIMIT ?`, Math.min(Math.max(1, limit), 500))
+      .toArray();
+  }
+
+  async replaceWithCiphertext(props: ClickProps, input: { key_id: string; epoch: number; rows: Array<{ id: string; ct: string }> }): Promise<{ replaced: number }> {
+    const meta = this.encMeta();
+    if (meta.mode !== "private" || input.epoch !== meta.epoch) return { replaced: 0 };
+    this.requireSlot(props.principalId, input.key_id, meta.epoch);
+    let replaced = 0;
+    this.ctx.storage.transactionSync(() => {
+      for (const row of input.rows) {
+        if (typeof row.ct !== "string" || !row.ct.startsWith("v1.") || row.ct.length > MAX_CT) continue;
+        replaced += this.ctx.storage.sql.exec(
+          `UPDATE events SET enc = 1, key_epoch = ?, body_ct = ?, text = '' WHERE id = ? AND enc = 0`,
+          meta.epoch, row.ct, row.id,
+        ).rowsWritten > 0 ? 1 : 0;
+      }
+    });
+    return { replaced };
+  }
+
+  /**
+   * Admin: give up on history nobody can decrypt. Deletes every encrypted message and all
+   * key material, then installs a new key for the members whose keys are known.
+   */
+  async startFresh(props: ClickProps, input: { epoch: number; slots: Array<{ key_id: string; wrapped: string }> }): Promise<{ deleted_messages: number; epoch: number }> {
+    this.assertAdmin(props.role);
+    const meta = this.encMeta();
+    if (input.epoch <= meta.epoch) throw new ClickError("This click's key changed. Try again.");
+    let deleted = 0;
+    this.ctx.storage.transactionSync(() => {
+      deleted = this.ctx.storage.sql.exec<{ n: number }>(`SELECT COUNT(*) AS n FROM events WHERE enc = 1`).one().n;
+      this.ctx.storage.sql.exec(`DELETE FROM deliveries WHERE event_id IN (SELECT id FROM events WHERE enc = 1)`);
+      this.ctx.storage.sql.exec(`DELETE FROM events WHERE enc = 1`);
+      this.ctx.storage.sql.exec(`DELETE FROM epoch_keys`);
+      this.ctx.storage.sql.exec(`DELETE FROM key_slots`);
+      this.ctx.storage.sql.exec(`UPDATE invites SET key_wrap = NULL, key_epoch = NULL`);
+      this.insertSlots(input.epoch, input.slots);
+      this.ctx.storage.sql.exec(`UPDATE click_meta SET enc_epoch = ?, enc_rotate = 0, enc_mode = 'private' WHERE id = 1`, input.epoch);
+    });
+    return { deleted_messages: deleted, epoch: input.epoch };
+  }
+
+  /** Attach the click key, wrapped under the invite secret, to an invite. */
+  async setInviteKey(props: ClickProps, inviteId: string, input: { key_id: string; epoch: number; wrapped: string }): Promise<void> {
+    this.assertAdmin(props.role);
+    const meta = this.encMeta();
+    if (input.epoch !== meta.epoch || !input.wrapped.startsWith("v1.")) return;
+    this.requireSlot(props.principalId, input.key_id, meta.epoch);
+    this.ctx.storage.sql.exec(`UPDATE invites SET key_wrap = ?, key_epoch = ? WHERE id = ?`, input.wrapped, input.epoch, inviteId);
+  }
+
+  /** The invite's wrapped click key, if it is still for the current epoch. */
+  async inviteKey(tokenHash: string): Promise<{ epoch: number; wrapped: string } | null> {
+    const meta = this.encMeta();
+    const row = this.ctx.storage.sql
+      .exec<{ key_wrap: string | null; key_epoch: number | null }>(`SELECT key_wrap, key_epoch FROM invites WHERE token_hash = ?`, tokenHash)
+      .toArray()[0];
+    if (!row?.key_wrap || row.key_epoch !== meta.epoch || meta.epoch === 0) return null;
+    return { epoch: row.key_epoch, wrapped: row.key_wrap };
+  }
+
+  /** A joiner proved it holds an invite carrying the current key: store its slot. */
+  async shareKeysAsInvite(principalId: string, input: { epoch: number; key_id: string; wrapped: string }, tokenHash: string): Promise<boolean> {
+    const meta = this.encMeta();
+    const invite = this.ctx.storage.sql
+      .exec<{ key_epoch: number | null }>(`SELECT key_epoch FROM invites WHERE token_hash = ? AND key_wrap IS NOT NULL`, tokenHash)
+      .toArray()[0];
+    if (!invite || invite.key_epoch !== meta.epoch || input.epoch !== meta.epoch) return false;
+    const owner = this.ctx.storage.sql.exec<{ n: number }>(`SELECT COUNT(*) AS n FROM member_keys WHERE key_id = ? AND principal_id = ?`, input.key_id, principalId).one().n;
+    if (owner === 0) return false;
+    return this.insertSlots(meta.epoch, [{ key_id: input.key_id, wrapped: input.wrapped }]) === 1;
+  }
+
+  /** After rotate_key: the old admin key's recovery copy goes; the new key is registered. */
+  async replaceAdminKey(props: ClickProps, key: PublicKeyInput, slot: { epoch: number; wrapped: string } | null): Promise<void> {
+    this.assertAdmin(props.role);
+    const admin = this.requireMeta().admin_principal;
+    this.ctx.storage.transactionSync(() => {
+      this.ctx.storage.sql.exec(`DELETE FROM key_slots WHERE key_id IN (SELECT key_id FROM member_keys WHERE kind = 'admin')`);
+      this.ctx.storage.sql.exec(`DELETE FROM member_keys WHERE kind = 'admin'`);
+    });
+    this.rememberKey(admin, { ...key, kind: "admin" });
+    if (slot && slot.epoch === this.encMeta().epoch) this.insertSlots(slot.epoch, [{ key_id: key.id, wrapped: slot.wrapped }]);
+  }
+
+  /** For whoami/list_clicks: the click's encryption state. */
+  async plaintextCount(): Promise<number> {
+    return this.ctx.storage.sql.exec<{ n: number }>(`SELECT COUNT(*) AS n FROM events WHERE enc = 0`).one().n;
+  }
+
+  async encryptionInfo(): Promise<{ encryption: "standard" | "private"; key_epoch: number; plaintext_left: number }> {
+    const meta = this.encMeta();
+    const left = meta.mode === "private" ? this.ctx.storage.sql.exec<{ n: number }>(`SELECT COUNT(*) AS n FROM events WHERE enc = 0`).one().n : 0;
+    return { encryption: meta.mode, key_epoch: meta.epoch, plaintext_left: left };
   }
 
   private agentByHandle(handle: string): AgentRow | undefined {
@@ -1642,4 +2005,9 @@ export class ClickHub extends DurableObject<Env> {
     if (!url || !key) throw new ClickError("Provide both webhook_url and webhook_key.");
     return { url: parseWebhookUrl(url).toString(), key: requireWebhookKey(key) };
   }
+}
+
+function sealedOf(row: { enc: number; key_epoch: number | null; body_ct: string | null }): { sealed?: { epoch: number; ct: string } } {
+  if (row.enc !== 1 || row.key_epoch == null || !row.body_ct) return {};
+  return { sealed: { epoch: row.key_epoch, ct: row.body_ct } };
 }

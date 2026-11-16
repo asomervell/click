@@ -4,6 +4,7 @@ import {
   type ResolveExternalTokenResult,
 } from "@cloudflare/workers-oauth-provider";
 import { resolveBearer } from "./clicks";
+import { newSeed } from "./enc";
 import type { ClickProps } from "./types";
 
 const SCOPES = ["click", "offline_access"];
@@ -36,6 +37,12 @@ export function providerOptions(origin: string): OAuthProviderOptions<Env> {
       resource_name: "Click",
     },
     resolveExternalToken,
+    // Grants made before private clicks existed get their own key on their next refresh.
+    async tokenExchangeCallback(options) {
+      const props = options.props as ClickProps | undefined;
+      if (!props || props.cred) return undefined;
+      return { newProps: { ...props, cred: { seed: newSeed(), kind: "cred" } } };
+    },
     onError({ code, status, internal }) {
       console.error(JSON.stringify({ message: "oauth_error", code, status, reason: internal.reason }));
     },

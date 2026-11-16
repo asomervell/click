@@ -12,7 +12,10 @@ import {
   selectClick,
   startCreateClick,
   verifyCreateClick,
+  withCred,
 } from "./clicks";
+import { credFromSecret, credFromSeed } from "./enc";
+import { attachInviteKey, disablePrivate, enablePrivate, handKeys, sendMessage, startFresh, unlock, wantsPrivate } from "./private";
 import { acceptAdd, addMember, approveJoin, declineJoin, deleteIdentity, joinRequests, openToJoin, registerWithAccountHandle, renameHandle, requestJoin, signupOverHttp } from "./agents";
 import { ownerKeyMatches } from "./crypto";
 import { getDirectory } from "./directory";
@@ -36,12 +39,14 @@ export async function handleHttpApi(request: Request, env: Env, ctx: ExecutionCo
       const body = await readJson(request);
       // A signed-in agent that creates a click gets it added to its own memberships.
       const accountId = home && home.role !== "operator" ? home.principalId : null;
-      const started = await startCreateClick(env, { email: String(body.email ?? ""), name: body.name, request, accountId, origin: url.origin });
+      const cred = home?.cred && accountId ? await credFromSeed(home.cred.seed, "cred") : null;
+      const started = await startCreateClick(env, { email: String(body.email ?? ""), name: body.name, request, accountId, origin: url.origin, encryption: wantsPrivate(body.encryption), cred });
       return json(started, started.status === "created" ? 201 : 202);
     }
     if (request.method === "POST" && path === "/api/clicks/verify") {
       const body = await readJson(request);
-      return json(await verifyCreateClick(env, String(body.pending_id ?? ""), String(body.code ?? ""), url.origin), 201);
+      const cred = home?.cred && home.role !== "operator" ? await credFromSeed(home.cred.seed, home.cred.kind) : undefined;
+      return json(await verifyCreateClick(env, String(body.pending_id ?? ""), String(body.code ?? ""), url.origin, { encryption: wantsPrivate(body.encryption), cred, accountId: home && home.role !== "operator" ? home.principalId : null }), 201);
     }
     if (request.method === "POST" && path === "/api/clicks/join") {
       const body = await readJson(request);
@@ -50,9 +55,10 @@ export async function handleHttpApi(request: Request, env: Env, ctx: ExecutionCo
       }
       const label = cleanLabel(body.label);
       if (home && home.role !== "operator") {
-        const identity = await loadIdentity(env, home);
+        const loaded = await loadIdentity(env, home);
+        const identity = loaded ? await withCred(loaded, home) : null;
         if (!identity) return problem(401, "Unauthorized", "unauthorized");
-        const joined = await joinWithInvite(env, String(body.invite ?? ""), label, identity.accountId);
+        const joined = await joinWithInvite(env, String(body.invite ?? ""), label, identity.accountId, identity.cred);
         const handle = await registerWithAccountHandle(env, identity, joined);
         return json({ click_id: joined.clickId, name: joined.clickName, principal_id: joined.principalId, role: joined.role, added_to_existing_identity: true, ...(handle ? { handle } : {}) }, 201);
       }
@@ -96,7 +102,8 @@ export async function handleHttpApi(request: Request, env: Env, ctx: ExecutionCo
       throw new ClickError("Unknown API route.");
     }
     if (!home) return problem(401, "Unauthorized", "unauthorized");
-    const identity = await loadIdentity(env, home);
+    const loaded = await loadIdentity(env, home);
+    const identity = loaded ? await withCred(loaded, home) : null;
     if (!identity) return problem(401, "Unauthorized", "unauthorized");
     const body = request.method === "POST" || request.method === "PATCH" ? await readJson(request) : {};
     const result = await dispatch(request, env, ctx, identity, path, url, body);
@@ -193,7 +200,7 @@ async function dispatch(
       click: chosen,
     });
     const target = getHub(env, routed.props.clickId);
-    const result = await target.send(routed.props, routed.send);
+    const result = await sendMessage(env, routed.props, identity.cred, routed.send);
     nudgeWaiters(routed.props.clickId);
     ctx.waitUntil(target.processWakes(Date.now(), routed.props.clickId).catch(() => undefined));
     return { ...result, click: routed.props.clickId, click_name: routed.props.clickName };
@@ -220,7 +227,7 @@ async function dispatch(
   }
   const props = selectClick(identity, chosen);
   const hub = getHub(env, props.clickId);
-  if (request.method === "GET" && path === "/api/me") return hub.whoami(props);
+  if (request.method === "GET" && path === "/api/me") return { ...(await hub.whoami(props)), ...(await hub.encryptionInfo()) };
   if (request.method === "PATCH" && path === "/api/me") {
     return hub.updateProfile(props, {
       name: optionalString(body.name),
@@ -231,7 +238,13 @@ async function dispatch(
     });
   }
   if (request.method === "PATCH" && (path === "/api/click" || path === `/api/clicks/${props.clickId}`)) {
-    return renameClick(env, props, body.name);
+    if (body.encryption == null) return renameClick(env, props, body.name);
+    const encryption = wantsPrivate(body.encryption) ? await enablePrivate(env, props, identity.cred) : await disablePrivate(env, props);
+    return body.name === undefined ? encryption : { ...(await renameClick(env, props, body.name)), ...encryption };
+  }
+  if (request.method === "POST" && path === "/api/encryption/start-fresh") {
+    if (body.confirm !== true) throw new ClickError("Send {\"confirm\": true}. This deletes every encrypted message.");
+    return startFresh(env, props, identity.cred);
   }
   if (request.method === "GET" && path === "/api/agents") return hub.listAgents();
   if (request.method === "POST" && path === "/api/agents") {
@@ -245,17 +258,21 @@ async function dispatch(
   }
   if (request.method === "DELETE" && path === "/api/agents/me") return hub.leave(props);
   if (request.method === "DELETE" && path.startsWith("/api/agents/")) {
-    return hub.removeMember(props, decodeURIComponent(path.slice("/api/agents/".length)));
+    const removed = await hub.removeMember(props, decodeURIComponent(path.slice("/api/agents/".length)));
+    await unlock(env, props, identity.cred).catch(() => undefined);
+    return removed;
   }
   if (request.method === "POST" && path === "/api/doorbell-link") return doorbellLink(env, props, url.origin);
   if (request.method === "GET" && path === "/api/key") throw new ClickError("Click keeps only a hash of the admin key and cannot show it. An admin can replace it with POST /api/v1/key/rotate.");
-  if (request.method === "POST" && path === "/api/key/rotate") return rotateClickKey(env, props);
+  if (request.method === "POST" && path === "/api/key/rotate") return rotateClickKey(env, props, identity.cred);
   if (request.method === "GET" && path === "/api/members") return hub.listMembers();
   if (request.method === "DELETE" && (path === "/api/clicks" || path === `/api/clicks/${props.clickId}`)) return deleteClick(env, props);
   if (request.method === "POST" && path === "/api/invites") {
     const hours = body.expires_in_hours == null ? undefined : Number(body.expires_in_hours);
     const maxUses = body.max_uses == null ? undefined : Number(body.max_uses);
-    return hub.createInvite(props, cleanLabel(body.label), hours, maxUses);
+    const invite = await hub.createInvite(props, cleanLabel(body.label), hours, maxUses);
+    await attachInviteKey(env, props, identity.cred, invite.id, invite.invite);
+    return invite;
   }
   if (request.method === "GET" && path === "/api/invites") {
     return hub.listInvites(props, url.searchParams.get("include_closed") === "true");
@@ -267,11 +284,13 @@ async function dispatch(
   }
   if (request.method === "GET" && path === "/api/tokens") return hub.listTokens(props);
   if (request.method === "POST" && path === "/api/tokens") {
-    return hub.mintToken(props, {
+    const minted = await hub.mintToken(props, {
       handle: body.handle ? String(body.handle) : undefined,
       name: body.name ? String(body.name) : undefined,
       label: body.label ? String(body.label) : undefined,
     });
+    await handKeys(env, props, identity.cred, minted.principal_id, [await credFromSecret(minted.token)]);
+    return minted;
   }
   if (request.method === "DELETE" && path.startsWith("/api/tokens/")) {
     const tokenId = decodeURIComponent(path.slice("/api/tokens/".length));

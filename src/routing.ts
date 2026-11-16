@@ -2,6 +2,7 @@ import { base64url } from "./crypto";
 import { type Identity, type Selected, selectClick } from "./clicks";
 import { getHub } from "./hub";
 import { pollUntil } from "./wait";
+import { openPage, publicKeyOf } from "./private";
 import { ClickError, type Membership } from "./types";
 import { clampLimit } from "./validate";
 
@@ -87,11 +88,12 @@ export async function inboxAcross(env: Env, identity: Identity, input: { click?:
   const chosen = explicit(input.click) ?? (identity.memberships.length === 1 ? identity.memberships[0]?.clickId ?? null : null);
   if (chosen) {
     const props = selectClick(identity, chosen);
-    const page = await getHub(env, props.clickId).inbox(props, limit);
+    const page = await getHub(env, props.clickId).inbox(props, limit, { key: publicKeyOf(identity.cred) });
+    const opened = await openPage(env, props, identity.cred, page.messages, (message) => message.event_id);
     return {
       click: props.clickId,
       click_name: props.clickName,
-      messages: page.messages.map((message) => ({ ...message, click: props.clickId, click_name: props.clickName })),
+      messages: opened.map((message) => ({ ...message, click: props.clickId, click_name: props.clickName })),
       next_cursor: null,
     };
   }
@@ -102,8 +104,9 @@ export async function inboxAcross(env: Env, identity: Identity, input: { click?:
   }
 
   const pages = await Promise.all(targets.map(async (props) => {
-    const page = await getHub(env, props.clickId).inbox(props, limit, { order: "desc", olderThan: cursor[props.clickId] ?? null });
-    return { props, messages: page.messages.map((message) => ({ ...message, click: props.clickId, click_name: props.clickName })) };
+    const page = await getHub(env, props.clickId).inbox(props, limit, { order: "desc", olderThan: cursor[props.clickId] ?? null, key: publicKeyOf(identity.cred) });
+    const opened = await openPage(env, props, identity.cred, page.messages, (message) => message.event_id);
+    return { props, messages: opened.map((message) => ({ ...message, click: props.clickId, click_name: props.clickName })) };
   }));
   const merged = pages.flatMap((page) => page.messages).sort(newestFirst);
   const taken = merged.slice(0, limit);
@@ -184,8 +187,10 @@ export async function historyAcross(env: Env, identity: Identity, input: {
       before: position?.t ?? input.before,
       before_id: position?.id,
       limit,
+      key: publicKeyOf(identity.cred),
     });
-    return { props, events: page.events.map((event) => ({ ...event, click: props.clickId, click_name: props.clickName })) };
+    const opened = await openPage(env, props, identity.cred, page.events, (event) => event.id);
+    return { props, events: opened.map((event) => ({ ...event, click: props.clickId, click_name: props.clickName })) };
   }));
   const pages = settled.flatMap((item) => (item.status === "fulfilled" ? [item.value] : []));
   if (pages.length === 0) {

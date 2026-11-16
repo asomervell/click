@@ -3,6 +3,8 @@ import { randomToken } from "./crypto";
 import { getDirectory } from "./directory";
 import { signupMode } from "./email";
 import { getHub } from "./hub";
+import { credFromSecret, credFromSeed, type CredKey, seedFromSecret } from "./enc";
+import { inviteHandoff, makePrivateAtCreate, rotateAdminKeyCopy } from "./private";
 import { cachedIdentity, rememberIdentity } from "./identity-cache";
 import { getOAuthApi } from "@cloudflare/workers-oauth-provider";
 import { providerOptions } from "./provider";
@@ -17,7 +19,7 @@ export type CreateStarted =
   | { status: "verification_sent"; pending_id: string; email: string; expires_at: number; verify: string }
   | (ClickHandoff & { email_verified: false });
 
-export type CreateVerified = ClickHandoff & { email_verified: true };
+export type CreateVerified = ClickHandoff & { email_verified: true; encryption?: "private"; key_epoch?: number };
 
 export { KEY_NOTICE } from "./types";
 
@@ -130,6 +132,8 @@ export async function startCreateClick(env: Env, input: {
   request: Request | null;
   accountId?: string | null;
   origin?: string;
+  encryption?: boolean;
+  cred?: CredKey | null;
 }): Promise<CreateStarted> {
   const name = cleanClickName(input.name);
   const mode = signupMode(env);
@@ -152,6 +156,10 @@ export async function startCreateClick(env: Env, input: {
       emailVerified: false,
       origin: input.origin,
     });
+    if (input.encryption) {
+      const enc = await makePrivateAtCreate(env, handoff, input.accountId && input.cred ? { ...input.cred, kind: "cred" } : null);
+      return { ...handoff, email_verified: false, ...enc };
+    }
     return { ...handoff, email_verified: false };
   }
   const directory = getDirectory(env);
@@ -177,7 +185,7 @@ export async function startCreateClick(env: Env, input: {
   };
 }
 
-export async function verifyCreateClick(env: Env, pendingId: string, code: string, origin?: string): Promise<CreateVerified> {
+export async function verifyCreateClick(env: Env, pendingId: string, code: string, origin?: string, options: { encryption?: boolean; cred?: CredKey | null; accountId?: string | null; sameGrant?: boolean } = {}): Promise<CreateVerified> {
   if (!pendingId.trim() || !code.trim()) throw new ClickError("Send pending_id and code.");
   const created = await getDirectory(env).verifySignup(pendingId, code);
   await getHub(env, created.clickId).initClick({
@@ -194,6 +202,12 @@ export async function verifyCreateClick(env: Env, pendingId: string, code: strin
     emailVerified: true,
     origin,
   });
+  if (options.encryption) {
+    // Only the creator's own credential gets a slot: the new OAuth grant, or the signed-in account that started the signup.
+    const ownsClick = options.sameGrant || (!!options.accountId && created.accountId === options.accountId);
+    const enc = await makePrivateAtCreate(env, handoff, ownsClick && options.cred ? { ...options.cred, kind: "cred" } : null);
+    return { ...handoff, email_verified: true, ...enc };
+  }
   return { ...handoff, email_verified: true };
 }
 
@@ -211,7 +225,7 @@ export async function signInWithKey(env: Env, clickKey: string): Promise<ClickPr
  * identity's memberships. Without one, the invite creates a new identity whose
  * home is that click.
  */
-export async function joinWithInvite(env: Env, invite: string, label: string | null, accountId: string | null = null): Promise<ClickProps & { clickName: string | null }> {
+export async function joinWithInvite(env: Env, invite: string, label: string | null, accountId: string | null = null, cred?: CredKey | null): Promise<ClickProps & { clickName: string | null }> {
   const presented = invite.trim();
   if (!presented.startsWith("clk_inv_")) {
     throw new ClickError("That is not an invite. Ask the click admin for an invite (it starts with clk_inv_).");
@@ -226,6 +240,8 @@ export async function joinWithInvite(env: Env, invite: string, label: string | n
   if (accountId) {
     await directory.addMembership({ accountId, clickId, principalId: member.principalId, role: "member" });
   }
+  // Private clicks: the invite carries the click key, so the joiner can read at once.
+  await inviteHandoff(env, clickId, member.principalId, presented, cred ?? null);
   return { principalId: member.principalId, clickId, role: "member", clickName: await directory.clickName(clickId) };
 }
 
@@ -233,13 +249,16 @@ export async function joinWithInvite(env: Env, invite: string, label: string | n
 export async function joinWithInviteToken(env: Env, invite: string, label: string | null): Promise<ClickProps & { token: string; clickName: string | null }> {
   const joined = await joinWithInvite(env, invite, label, null);
   const token = await issueMemberToken(env, { clickId: joined.clickId, principalId: joined.principalId, role: "member", label });
+  await inviteHandoff(env, joined.clickId, joined.principalId, invite, await credFromSecret(token));
   return { ...joined, token };
 }
 
-export async function rotateClickKey(env: Env, props: ClickProps): Promise<{ click_key: string; notice: string }> {
+export async function rotateClickKey(env: Env, props: ClickProps, cred?: CredKey | null): Promise<{ click_key: string; notice: string }> {
   if (props.role !== "admin" && props.role !== "operator") throw new ClickError("Only a click admin can do that.");
   const next = randomToken("clk_");
   await getDirectory(env).replaceKey(props.clickId, await sha256Hex(next));
+  // Private clicks: the old key's recovery copy goes and the new key gets one now.
+  await rotateAdminKeyCopy(env, props, cred ?? null, next);
   return { click_key: next, notice: `Show this new admin key to your person once. ${KEY_NOTICE} Click keeps only a hash and cannot show it again. The old key stopped working.` };
 }
 
@@ -268,7 +287,8 @@ export async function resolveBearer(env: Env, token: string, request: Request): 
   if (!resolved) return null;
   const home: ClickProps = { principalId: resolved.props.principalId, clickId: resolved.props.clickId, role: resolved.props.role };
   rememberIdentity(home, resolved.identity);
-  return home;
+  // The bearer's key seed is derived from the token on every request and never stored.
+  return { ...home, cred: { seed: await seedFromSecret(presented), kind: resolved.props.adminKey ? "admin" : "cred" } };
 }
 
 /** Expand a credential's home props into every live membership. Null when nothing is left. */
@@ -401,3 +421,14 @@ export async function purgeClick(env: Env, clickId: string): Promise<{ click_id:
 }
 
 export { cleanLabel };
+
+/** Attach the request's credential key to an identity (from props.cred). */
+export async function withCred(identity: Identity, props: ClickProps): Promise<Identity> {
+  if (!props.cred?.seed) return identity;
+  try {
+    identity.cred = await credFromSeed(props.cred.seed, props.cred.kind === "admin" ? "admin" : "cred");
+  } catch {
+    // A malformed seed just means no key: private clicks then report "cannot decrypt".
+  }
+  return identity;
+}

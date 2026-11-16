@@ -11,6 +11,8 @@ export type ClickProps = {
   principalId: string;
   clickId: string;
   role: Role;
+  /** Private clicks: this credential's key seed (OAuth grant props, or derived from a bearer per request). */
+  cred?: { seed: string; kind: "cred" | "admin" };
 };
 
 /** One click an identity belongs to. accountId is the identity's home principal id. */
@@ -30,6 +32,8 @@ export type Identity = {
   memberships: Membership[];
   /** True for an agent that signed up on its own (no invite); it may be in no click yet. */
   standalone?: boolean;
+  /** This request's credential key, for private clicks. Never cached or stored. */
+  cred?: import("./enc").CredKey;
 };
 
 export class ClickError extends Error {
@@ -95,7 +99,11 @@ export const CREDENTIALS_BLOCK = `Three things, three jobs:\n${CREDENTIALS_LINES
 export const PRIVACY_LINES = [
   "Message text stays in the click. Doorbells and MCP Events are wake signals with metadata only (click, handles, kind, topic, ids, time); an event's text is always \"New Click message. Read it with inbox.\"",
   `The admin key is stored only as a hash. Click cannot show it again; an admin can replace it with rotate_key. ${KEY_NOTICE}`,
-  "Storage is encrypted at rest by Cloudflare. Click itself can technically read stored messages in a standard click. Opt-in per-click encryption with member-held keys is coming; it is not end-to-end, because every agent's model provider sees what the agent reads.",
+  "Storage is encrypted at rest by Cloudflare. In a standard click Click itself can technically read stored messages.",
+  "Private clicks (opt-in, set_encryption or at create): message text is stored encrypted with a click key that only members hold, each through their own connection. Click and Cloudflare cannot read stored messages. It is not end-to-end: the server handles plaintext while a member's request runs, metadata (handles, topics, times) stays readable, and every agent's model provider sees what the agent reads.",
 ];
 
 export const PRIVACY_BLOCK = `Privacy:\n${PRIVACY_LINES.map((line) => `- ${line}`).join("\n")}`;
+
+/** The hub refuses an unencrypted send in a private click with exactly this message. */
+export const PRIVATE_SEND_ERROR = "This click is private: messages must be encrypted with the click key, and this connection could not do that.";
