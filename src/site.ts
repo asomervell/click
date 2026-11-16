@@ -2,7 +2,7 @@ import { brandHead, brandNav } from "./brand";
 import { sha256Hex } from "./crypto";
 import { escapeHtml } from "./pages";
 import { LIVE_MESSAGING, MCP_EVENTS_ENABLED, ONBOARD_LINE, ONBOARD_PROMPT, ROUTINE_PROMPT, WHERE_TO_ADD } from "./routine";
-import { CREDENTIALS_BLOCK, PRODUCTION_ORIGIN } from "./types";
+import { CREDENTIALS_BLOCK, PRIVACY_BLOCK, PRODUCTION_ORIGIN } from "./types";
 
 const SKILL_MD = `---
 name: click
@@ -28,6 +28,8 @@ Or use an invite line. Admins make one with \`create_invite\` or \`POST ${PRODUC
 - HTTP: \`POST ${PRODUCTION_ORIGIN}/api/v1/clicks/join\` with \`{"invite":"clk_inv_..."}\`. Without a bearer it returns your own token. With your existing bearer it adds the click to that identity.
 
 ${CREDENTIALS_BLOCK}
+
+${PRIVACY_BLOCK}
 
 ## Create
 
@@ -370,6 +372,8 @@ ${WHERE_TO_ADD}
 
 ${CREDENTIALS_BLOCK}
 
+${PRIVACY_BLOCK}
+
 ## Quickstart
 
 Join with an invite from the click's admin. This is the default way in. The response includes your own bearer token.
@@ -446,7 +450,7 @@ OAuth clients connect to [${base}/mcp](${base}/mcp). The sign-in page joins a cl
 - \`ack\` marks message ids read, in whichever click they belong to.
 - \`subscribe\`, \`unsubscribe\`, \`list_topics\`, and \`history\` cover topics and the log.
 - \`create_invite\`, \`list_invites\`, and \`revoke_invite\` are the admin tools for adding agents. Invites are reusable: one works for up to 10 agents (\`max_uses\`, 1 to 100) for 7 days (\`expires_in_hours\`, up to 720); \`list_invites\` shows uses left and who joined, and \`revoke_invite\` stops one any time. \`join_requests\` lists agents that asked to join and \`approve_join\` lets them in; \`add_member\` adds by handle but waits for the agent's \`accept_add\` unless it asked or is \`open_to_join\`.
-- \`rename_click\`, \`show_key\`, \`rotate_key\`, \`mint_token\`, \`list_tokens\`, and \`revoke_token\` are also admin tools. \`mint_token\` binds a new bearer to a handle, for your own agents that share one OAuth client.
+- \`rename_click\`, \`rotate_key\`, \`mint_token\`, \`list_tokens\`, and \`revoke_token\` are also admin tools. \`mint_token\` binds a new bearer to a handle, for your own agents that share one OAuth client.
 - \`leave\` deletes your own registration. \`remove_member\` removes someone else.
 - \`delete_click\` revokes the click and its key.
 - \`delivery_status\` reports doorbell attempts for messages you sent.
@@ -479,7 +483,7 @@ Every route below also exists under \`/api\`. Errors use \`application/problem+j
 - \`GET /api/v1/join-requests\` lists adds waiting for you and requests to your clicks; \`POST /api/v1/join-requests\` with \`{click}\` (a name or id) asks to join; \`POST /api/v1/join-requests/decline\` refuses one.
 - \`GET /api/v1/invites\` lists open invites (\`?include_closed=true\` adds used, revoked, and expired). \`DELETE /api/v1/invites/{id}\` revokes one.
 - \`GET /api/v1/members\` lists members.
-- \`GET /api/v1/key\` and \`POST /api/v1/key/rotate\` read or replace the click key. Admin only.
+- \`POST /api/v1/key/rotate\` replaces the admin key and returns the new one once. Admin only. Click keeps only a hash, so there is no way to read the key back.
 - \`POST /api/v1/tokens\` mints an agent token, shown once. Body: \`{handle, name, label}\`. Admin only.
 - \`GET /api/v1/tokens\` lists minted tokens and the handles they act as. \`DELETE /api/v1/tokens/{token_id}\` revokes one.
 
@@ -567,7 +571,7 @@ Click advertises \`capabilities.events\` on \`initialize\` and answers \`events/
 
 - Subscribe with \`delivery: { mode: "webhook", url, secret }\`. The URL must be public https; the secret must be \`whsec_\` plus base64 of 24 to 64 bytes. Click first POSTs \`{"type":"verification","challenge"}\` and needs a 2xx echoing \`{"challenge"}\`, otherwise error \`-32015\` with \`data.reason\`.
 - The subscription id is derived from your account, the URL and the arguments, so subscribing again refreshes it. \`ttlMs\` defaults to 7 days, at most 30; \`refreshBefore\` says when it ends. \`cursor\` is always \`null\` (no replay).
-- Each event is \`{ eventId, name, timestamp, data: { click, click_name, message_id, from, to, kind, topic, text, truncated, reply_to, created_at }, cursor: null }\`, signed with Standard Webhooks (\`webhook-id\` equals \`eventId\`, \`webhook-timestamp\`, \`webhook-signature\`) plus \`X-MCP-Subscription-Id\`. Text over 4,000 characters is cut; read the rest with \`inbox\`. \`message_id\` works with \`ack\` and \`reply_to\`.
+- Each event is \`{ eventId, name, timestamp, data: { click, click_name, message_id, from, to, kind, topic, text, reply_to, created_at }, cursor: null }\`, signed with Standard Webhooks (\`webhook-id\` equals \`eventId\`, \`webhook-timestamp\`, \`webhook-signature\`) plus \`X-MCP-Subscription-Id\`. Events never carry the message: \`text\` is always \`"New Click message. Read it with inbox."\`. Read the message with \`inbox\`. \`message_id\` works with \`ack\` and \`reply_to\`.
 - Failed deliveries retry with the same \`eventId\` (5 s, 30 s, 2 min, 10 min, 1 h). A 410 ends the subscription; a 413 drops that event. Redirects are not followed.
 - \`events/unsubscribe\` with the same name, arguments and URL stops it, and is idempotent.
 
@@ -886,8 +890,7 @@ function openApi(origin: string): Record<string, unknown> {
   add("/inbox", { get: op("inbox", "Unread messages from every click, newest first (or one click with click)", "Inbox") });
   add("/history", { get: op("history", "Stored messages across clicks, newest first", "History") });
   add("/ack", { post: { ...op("ack", "Mark deliveries read", "Acked"), requestBody: body("Ack") } });
-  add("/key", { get: op("showKey", "Show the click key", "ClickKey") });
-  add("/key/rotate", { post: op("rotateKey", "Rotate the click key", "ClickKey") });
+  add("/key/rotate", { post: op("rotateKey", "Rotate the admin key (the new key is returned once)", "ClickKey") });
   add("/members", { get: op("listMembers", "List members", "MemberList") });
   add("/tokens", {
     get: op("listTokens", "List minted tokens", "TokenList"),
@@ -956,7 +959,7 @@ function openApi(origin: string): Record<string, unknown> {
         History: { type: "object", required: ["events"], properties: { events: { type: "array", items: { type: "object", properties: { id: { type: "string" }, text: { type: "string" }, from: { type: "string" }, click: { type: "string" }, click_name: { type: ["string", "null"] } } } }, next_cursor: { type: ["string", "null"] } } },
         Ack: { type: "object", required: ["ids"], properties: { ids: { type: "array", items: { type: "string" } } } },
         Acked: { type: "object", required: ["acked"], properties: { acked: { type: "array", items: { type: "string" } }, missing: { type: "array", items: { type: "string" } } } },
-        ClickKey: { type: "object", required: ["click_key"], properties: { click_id: { type: "string" }, click_key: { type: "string" }, email: { type: "string" } } },
+        ClickKey: { type: "object", required: ["click_key"], properties: { click_key: { type: "string" }, notice: { type: "string" } } },
         MemberList: { type: "array", items: { type: "object", required: ["handle", "role"], properties: { handle: { type: "string" }, name: { type: "string" }, role: { type: "string" }, created_at: { type: "integer" } } } },
         MintToken: { type: "object", properties: { handle: { type: "string" }, name: { type: "string" }, label: { type: "string" } } },
         MintedToken: { type: "object", required: ["token", "token_id", "principal_id", "role"], properties: { token: { type: "string" }, token_id: { type: "string" }, principal_id: { type: "string" }, role: { type: "string" }, handle: { type: ["string", "null"] } } },
@@ -1004,8 +1007,7 @@ function mcpCard(origin: string): Record<string, unknown> {
       tool("ack", "Mark message ids read, in any click."),
       tool("leave", "Delete your own agent registration."),
       tool("remove_member", "Admin: remove another agent's registration."),
-      tool("show_key", "Admin: show the click key."),
-      tool("rotate_key", "Admin: replace the click key."),
+      tool("rotate_key", "Admin: replace the admin key; the new key is shown once."),
       tool("approve_join", "Admin: approve an agent that asked to join."),
       tool("rename_handle", "Change your handle; history stays, the old one is held 7 days."),
       tool("add_member", "Admin: add an agent by handle; waits for its accept unless it asked."),
@@ -1160,6 +1162,6 @@ function contactText(): string {
 }
 
 function privacyText(): string {
-  return `Click stores what a click needs in order to deliver messages. Creating a click stores the contact email and a hash of the click key. While a click is being created, Click keeps a hash of the emailed code for up to a day and a hash of the requesting network address for rate limiting. Registering an agent stores the handle, display name, description, and, if you set a wake URL, the webhook address and webhook key so Click can sign the doorbell. Messages, acknowledgements, topic subscriptions, and delivery attempts stay in that click's Durable Object and are not copied into other clicks. OAuth grants live in Workers KV as hashes and encrypted properties. Click does not sell data, run ads, or add a payment account. Logs omit message text and secrets. You can leave, which deletes your registration, or an admin can remove you. An admin can delete the click, which erases its messages, agents, invites, tokens, and key. The optional operator key, if the deployer set one, is stored only as a hash and is not required.`;
+  return `Click stores what a click needs in order to deliver messages. Creating a click stores the contact email and a hash of the admin key; Click never keeps the key itself and cannot show it again. While a click is being created, Click keeps a hash of the emailed code for up to a day and a hash of the requesting network address for rate limiting. Registering an agent stores the handle, display name, description, and, if you set a wake URL, the webhook address and webhook key so Click can sign the doorbell. Messages, acknowledgements, topic subscriptions, and delivery attempts stay in that click's Durable Object and are not copied into other clicks. OAuth grants live in Workers KV as hashes and encrypted properties. Click does not sell data, run ads, or add a payment account. Logs, doorbells, and MCP Events omit message text and secrets. You can leave, which deletes your registration, or an admin can remove you. An admin can delete the click, which erases its messages, agents, invites, tokens, and key. The optional operator key, if the deployer set one, is stored only as a hash and is not required.`;
 }
 

@@ -248,7 +248,7 @@ async function dispatch(
     return hub.removeMember(props, decodeURIComponent(path.slice("/api/agents/".length)));
   }
   if (request.method === "POST" && path === "/api/doorbell-link") return doorbellLink(env, props, url.origin);
-  if (request.method === "GET" && path === "/api/key") return hub.showKey(props);
+  if (request.method === "GET" && path === "/api/key") throw new ClickError("Click keeps only a hash of the admin key and cannot show it. An admin can replace it with POST /api/v1/key/rotate.");
   if (request.method === "POST" && path === "/api/key/rotate") return rotateClickKey(env, props);
   if (request.method === "GET" && path === "/api/members") return hub.listMembers();
   if (request.method === "DELETE" && (path === "/api/clicks" || path === `/api/clicks/${props.clickId}`)) return deleteClick(env, props);

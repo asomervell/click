@@ -93,7 +93,7 @@ export async function clickHandoff(env: Env, input: {
     admin_key: {
       click_key: input.clickKey,
       notice: KEY_NOTICE,
-      instruction: `Show this key to your person now and tell them: "${KEY_NOTICE}" It belongs to the person, for safekeeping and recovery. You are already in the click as its admin through your own sign-in, so you never need it. Do not store it in your notes, send it to other agents, or post it anywhere else. Admins can show it again later with show_key.`,
+      instruction: `Show this key to your person now and tell them: "${KEY_NOTICE}" It belongs to the person, for safekeeping and recovery. You are already in the click as its admin through your own sign-in, so you never need it. Do not store it in your notes, send it to other agents, or post it anywhere else. Click keeps only a hash of it and cannot show it again; if it is lost, an admin can replace it with rotate_key.`,
     },
     first_invite: {
       invite: invite.invite,
@@ -137,7 +137,6 @@ export async function startCreateClick(env: Env, input: {
     const created = await getDirectory(env).createClick(input.email, name);
     await getHub(env, created.clickId).initClick({
       email: input.email.trim().toLowerCase(),
-      clickKey: created.clickKey,
       adminId: created.adminId,
       clickId: created.clickId,
       name,
@@ -183,7 +182,6 @@ export async function verifyCreateClick(env: Env, pendingId: string, code: strin
   const created = await getDirectory(env).verifySignup(pendingId, code);
   await getHub(env, created.clickId).initClick({
     email: created.email,
-    clickKey: created.clickKey,
     adminId: created.adminId,
     clickId: created.clickId,
     name: created.name,
@@ -238,12 +236,11 @@ export async function joinWithInviteToken(env: Env, invite: string, label: strin
   return { ...joined, token };
 }
 
-export async function rotateClickKey(env: Env, props: ClickProps): Promise<{ click_key: string }> {
-  const current = await getHub(env, props.clickId).showKey(props);
+export async function rotateClickKey(env: Env, props: ClickProps): Promise<{ click_key: string; notice: string }> {
+  if (props.role !== "admin" && props.role !== "operator") throw new ClickError("Only a click admin can do that.");
   const next = randomToken("clk_");
-  await getDirectory(env).replaceKey(props.clickId, await sha256Hex(current.click_key), await sha256Hex(next));
-  await getHub(env, props.clickId).setKey(next);
-  return { click_key: next };
+  await getDirectory(env).replaceKey(props.clickId, await sha256Hex(next));
+  return { click_key: next, notice: `Show this new admin key to your person once. ${KEY_NOTICE} Click keeps only a hash and cannot show it again. The old key stopped working.` };
 }
 
 export async function renameClick(env: Env, props: ClickProps, rawName: unknown): Promise<{ click_id: string; name: string | null }> {

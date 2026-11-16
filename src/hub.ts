@@ -12,7 +12,7 @@ import {
   requireWebhookKey,
 } from "./validate";
 import { postDoorbell, retryDelayMs, type WakeOutcome } from "./webhook";
-import { callbackHost, eventBody, eventRetryDelayMs, type EventOutcome, logEvent, postEvent } from "./events";
+import { callbackHost, eventBody, eventRetryDelayMs, type EventOutcome, logEvent, postEvent, redactEventBody } from "./events";
 
 type AgentRow = {
   id: string;
@@ -180,6 +180,8 @@ export class ClickHub extends DurableObject<Env> {
       PRIMARY KEY (invite_id, principal_id)
     )`);
     this.addColumn("events", "reply_to", "TEXT");
+    // The admin key lives only as a sha256 in the directory. Older clicks kept a plaintext copy here; wipe it.
+    this.ctx.storage.sql.exec(`UPDATE click_meta SET click_key = '' WHERE click_key != ''`);
     this.ctx.storage.sql.exec(`
       CREATE TABLE IF NOT EXISTS event_subs (
         id TEXT NOT NULL,
@@ -205,6 +207,18 @@ export class ClickHub extends DurableObject<Env> {
       );
       CREATE INDEX IF NOT EXISTS event_deliveries_due ON event_deliveries (status, next_at);
     `);
+    // Event payloads no longer carry message text. Strip it from any queued rows written before that.
+    this.stripQueuedEventText();
+  }
+
+  private stripQueuedEventText(): void {
+    const rows = this.ctx.storage.sql
+      .exec<{ id: string; body: string }>(`SELECT id, body FROM event_deliveries WHERE body LIKE '%"text"%'`)
+      .toArray();
+    for (const row of rows) {
+      const next = redactEventBody(row.body);
+      if (next !== row.body) this.ctx.storage.sql.exec(`UPDATE event_deliveries SET body = ? WHERE id = ?`, next, row.id);
+    }
   }
 
   /** Store or refresh an MCP Events subscription for this agent. */
@@ -410,12 +424,12 @@ export class ClickHub extends DurableObject<Env> {
       .toArray()[0];
   }
 
-  async initClick(input: { email: string; clickKey: string; adminId: string; clickId?: string; name?: string | null }): Promise<void> {
+  async initClick(input: { email: string; adminId: string; clickId?: string; name?: string | null }): Promise<void> {
+    // click_key stays empty: the admin key is never stored in plaintext, only as a hash in the directory.
     this.ctx.storage.sql.exec(
-      `INSERT INTO click_meta (id, email, click_key, admin_principal, created_at, click_id, name) VALUES (1, ?, ?, ?, ?, ?, ?)
+      `INSERT INTO click_meta (id, email, click_key, admin_principal, created_at, click_id, name) VALUES (1, ?, '', ?, ?, ?, ?)
        ON CONFLICT (id) DO NOTHING`,
       input.email,
-      input.clickKey,
       input.adminId,
       Date.now(),
       input.clickId ?? null,
@@ -645,7 +659,7 @@ export class ClickHub extends DurableObject<Env> {
       }
     });
     this.wakeWaiters(recipients.map((agent) => agent.id));
-    this.queueEvents(recipients, deliveryIds, { from: from.handle, kind, topic, text, replyTo, createdAt: now, clickId: props.clickId });
+    this.queueEvents(recipients, deliveryIds, { from: from.handle, kind, topic, replyTo, createdAt: now, clickId: props.clickId });
     await this.scheduleAlarm();
     return { event_id: eventId, kind, recipients: recipients.map((agent) => agent.handle) };
   }
@@ -1231,7 +1245,7 @@ export class ClickHub extends DurableObject<Env> {
   private queueEvents(
     recipients: AgentRow[],
     deliveryIds: Map<string, string>,
-    message: { from: string; kind: string; topic: string | null; text: string; replyTo: string | null; createdAt: number; clickId: string },
+    message: { from: string; kind: string; topic: string | null; replyTo: string | null; createdAt: number; clickId: string },
   ): void {
     if (recipients.length === 0) return;
     const now = Date.now();
@@ -1254,7 +1268,6 @@ export class ClickHub extends DurableObject<Env> {
           to: byId.get(sub.agent_id)?.handle ?? "",
           kind: message.kind,
           topic: message.topic,
-          text: message.text,
           replyTo: message.replyTo,
           createdAt: message.createdAt,
         });
@@ -1484,16 +1497,6 @@ export class ClickHub extends DurableObject<Env> {
     );
   }
 
-  async showKey(props: ClickProps): Promise<{ click_id: string; click_key: string; email: string }> {
-    this.assertAdmin(props.role);
-    const meta = this.requireMeta();
-    return { click_id: props.clickId, click_key: meta.click_key, email: meta.email };
-  }
-
-  async setKey(clickKey: string): Promise<void> {
-    this.ctx.storage.sql.exec(`UPDATE click_meta SET click_key = ? WHERE id = 1`, clickKey);
-  }
-
   async leave(props: ClickProps): Promise<{ handle: string }> {
     const agent = this.agentByPrincipal(props.principalId);
     if (!agent) throw new ClickError("You have no agent to remove.");
@@ -1542,15 +1545,15 @@ export class ClickHub extends DurableObject<Env> {
     });
   }
 
-  private meta(): { email: string; click_key: string; admin_principal: string } | undefined {
+  private meta(): { email: string; admin_principal: string } | undefined {
     return this.ctx.storage.sql
-      .exec<{ email: string; click_key: string; admin_principal: string }>(
-        `SELECT email, click_key, admin_principal FROM click_meta WHERE id = 1`,
+      .exec<{ email: string; admin_principal: string }>(
+        `SELECT email, admin_principal FROM click_meta WHERE id = 1`,
       )
       .toArray()[0];
   }
 
-  private requireMeta(): { email: string; click_key: string; admin_principal: string } {
+  private requireMeta(): { email: string; admin_principal: string } {
     const meta = this.meta();
     if (!meta) throw new ClickError("This click is not initialized.");
     return meta;

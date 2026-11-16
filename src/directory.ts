@@ -739,14 +739,14 @@ export class ClickDirectory extends DurableObject<Env> {
     if (result.rowsWritten !== 1) throw new ClickError("That click was not found.");
   }
 
-  async replaceKey(clickId: string, previousHash: string, nextHash: string): Promise<void> {
+  async replaceKey(clickId: string, nextHash: string): Promise<void> {
     const result = this.ctx.storage.sql.exec(
-      `UPDATE clicks SET key_hash = ? WHERE id = ? AND key_hash = ? AND revoked_at IS NULL`,
+      `UPDATE clicks SET key_hash = ? WHERE id = ? AND revoked_at IS NULL`,
       nextHash,
       clickId,
-      previousHash,
     );
-    if (result.rowsWritten !== 1) throw new ClickError("The click key could not be rotated.");
+    // rowsWritten also counts index rows, so any write means the click row changed.
+    if (result.rowsWritten < 1) throw new ClickError("The click key could not be rotated.");
   }
 
   async rememberToken(input: { tokenHash: string; clickId: string; principalId: string; role: Role }): Promise<void> {
