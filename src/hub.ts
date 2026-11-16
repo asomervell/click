@@ -1,7 +1,7 @@
 import { DurableObject } from "cloudflare:workers";
 import { randomToken, sha256Hex } from "./crypto";
 import { getDirectory } from "./directory";
-import { ClickError, inviteLine, PRIVATE_SEND_ERROR, type ClickProps, type Profile, type PublicAgent, type Role } from "./types";
+import { ClickError, inviteLine, PRIVATE_SEND_ERROR, SEALED_SEND_ERROR, type ClickProps, type Profile, type PublicAgent, type Role } from "./types";
 import {
   clampLimit,
   parseWebhookUrl,
@@ -42,8 +42,13 @@ export type SealedBody = { epoch: number; ct: string; event_id: string; created_
 export type PublicKeyInput = { id: string; pub: string; kind: "cred" | "admin" };
 
 /** Everything the Worker needs to unlock a private click for one credential, in one call. */
+export type EncMode = "standard" | "private" | "sealed";
+
+/** Sealed clicks: a member's published key, blinded mailbox, and delivery token (members only). */
+export type SealedEntry = { mailbox: string; public_key: string; delivery_token: string | null; updated_at: number };
+
 export type KeyState = {
-  mode: "standard" | "private";
+  mode: EncMode;
   epoch: number;
   slot: string | null;
   chain: Array<{ epoch: number; wrapped: string }>;
@@ -55,6 +60,12 @@ export type KeyState = {
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const KEY_ID = /^[0-9a-f]{32}$/;
 const MAX_CT = 16_000;
+const MAILBOX = /^[0-9a-f]{32}$/;
+const B64U_32 = /^[A-Za-z0-9_-]{43}$/;
+// Sealed envelopes are padded: these are the only lengths accepted (see cli/sealed.mjs).
+const SEALED_SIZES = new Set([512, 2048, 8192, 32768].map((bucket) => bucket + 113));
+const SEALED_PER_MINUTE = 60;
+const SEALED_INBOX_MAX = 500;
 
 /** What a caller may know about one message it can see, for routing a reply. */
 export type LocatedMessage = {
@@ -242,6 +253,36 @@ export class ClickHub extends DurableObject<Env> {
     this.addColumn("invites", "key_wrap", "TEXT");
     this.addColumn("invites", "key_epoch", "INTEGER");
     this.addColumn("principals", "removed_at", "INTEGER");
+    // Sealed clicks (opt-in): published member keys, blinded mailboxes, opaque envelopes.
+    this.addColumn("click_meta", "sealed_group", "TEXT");
+    this.ctx.storage.sql.exec(`
+      CREATE TABLE IF NOT EXISTS sealed_keys (
+        principal_id TEXT PRIMARY KEY,
+        mailbox TEXT NOT NULL UNIQUE,
+        public_key TEXT NOT NULL,
+        delivery_hash TEXT,
+        delivery_token TEXT,
+        updated_at INTEGER NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS sealed_mail (
+        id TEXT PRIMARY KEY,
+        mailbox TEXT NOT NULL,
+        envelope TEXT NOT NULL,
+        created_at INTEGER NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS sealed_mail_box ON sealed_mail (mailbox, created_at);
+      CREATE TABLE IF NOT EXISTS sealed_subs (
+        topic TEXT NOT NULL,
+        mailbox TEXT NOT NULL,
+        PRIMARY KEY (topic, mailbox)
+      );
+      CREATE TABLE IF NOT EXISTS sealed_rate (
+        mailbox TEXT NOT NULL,
+        minute INTEGER NOT NULL,
+        n INTEGER NOT NULL,
+        PRIMARY KEY (mailbox, minute)
+      );
+    `);
     this.ctx.storage.sql.exec(`
       CREATE TABLE IF NOT EXISTS member_keys (
         key_id TEXT PRIMARY KEY,
@@ -661,6 +702,8 @@ export class ClickHub extends DurableObject<Env> {
       sealed = this.checkSealed(input.sealed, enc.epoch);
     } else if (enc.mode === "private" && !system) {
       throw new ClickError(PRIVATE_SEND_ERROR);
+    } else if (enc.mode === "sealed" && !system) {
+      throw new ClickError(SEALED_SEND_ERROR);
     }
     const since = Date.now() - 60_000;
     const recent = this.ctx.storage.sql
@@ -1636,6 +1679,15 @@ export class ClickHub extends DurableObject<Env> {
         this.ctx.storage.sql.exec(`UPDATE principals SET removed_at = ? WHERE id = ?`, Date.now(), principalId);
       }
       if (dropped > 0) this.ctx.storage.sql.exec(`UPDATE click_meta SET enc_rotate = 1 WHERE id = 1 AND enc_epoch > 0`);
+      // Sealed clicks: drop the member's key, mailbox, and mail, and void every delivery token so
+      // the departed member can no longer drop mail in anyone's box. Proxies publish new tokens.
+      const box = this.ctx.storage.sql.exec<{ mailbox: string }>(`SELECT mailbox FROM sealed_keys WHERE principal_id = ?`, principalId).toArray()[0]?.mailbox;
+      if (box) {
+        this.ctx.storage.sql.exec(`DELETE FROM sealed_keys WHERE principal_id = ?`, principalId);
+        this.ctx.storage.sql.exec(`DELETE FROM sealed_mail WHERE mailbox = ?`, box);
+        this.ctx.storage.sql.exec(`DELETE FROM sealed_subs WHERE mailbox = ?`, box);
+        this.ctx.storage.sql.exec(`UPDATE sealed_keys SET delivery_hash = NULL, delivery_token = NULL`);
+      }
     });
   }
 
@@ -1722,11 +1774,12 @@ export class ClickHub extends DurableObject<Env> {
   // Private clicks. The hub never sees a click key or plaintext of an encrypted body:
   // it stores ciphertext, public keys, and data keys wrapped to those public keys.
 
-  private encMeta(): { mode: "standard" | "private"; epoch: number; rotate: boolean } {
+  private encMeta(): { mode: EncMode; epoch: number; rotate: boolean } {
     const row = this.ctx.storage.sql
       .exec<{ enc_mode: string; enc_epoch: number; enc_rotate: number }>(`SELECT enc_mode, enc_epoch, enc_rotate FROM click_meta WHERE id = 1`)
       .toArray()[0];
-    return { mode: row?.enc_mode === "private" ? "private" : "standard", epoch: row?.enc_epoch ?? 0, rotate: (row?.enc_rotate ?? 0) === 1 };
+    const mode: EncMode = row?.enc_mode === "private" || row?.enc_mode === "sealed" ? row.enc_mode : "standard";
+    return { mode, epoch: row?.enc_epoch ?? 0, rotate: (row?.enc_rotate ?? 0) === 1 };
   }
 
   private checkSealed(sealed: SealedBody, epoch: number): SealedBody {
@@ -1756,7 +1809,7 @@ export class ClickHub extends DurableObject<Env> {
   }
 
   /** Cheap: whether sends here must be encrypted. */
-  async encMode(): Promise<{ mode: "standard" | "private"; epoch: number }> {
+  async encMode(): Promise<{ mode: EncMode; epoch: number }> {
     const meta = this.encMeta();
     return { mode: meta.mode, epoch: meta.epoch };
   }
@@ -1876,7 +1929,7 @@ export class ClickHub extends DurableObject<Env> {
   }
 
   /** Admin: turn encryption of new messages on or off. Off keeps existing keys so encrypted history stays readable. */
-  async setEncMode(props: ClickProps, mode: "standard" | "private"): Promise<{ mode: "standard" | "private"; epoch: number }> {
+  async setEncMode(props: ClickProps, mode: EncMode): Promise<{ mode: EncMode; epoch: number }> {
     this.assertAdmin(props.role);
     const meta = this.encMeta();
     if (mode === "private" && meta.epoch === 0) throw new ClickError("This click has no key yet.");
@@ -1981,10 +2034,149 @@ export class ClickHub extends DurableObject<Env> {
     return this.ctx.storage.sql.exec<{ n: number }>(`SELECT COUNT(*) AS n FROM events WHERE enc = 0`).one().n;
   }
 
-  async encryptionInfo(): Promise<{ encryption: "standard" | "private"; key_epoch: number; plaintext_left: number }> {
+  async encryptionInfo(): Promise<{ encryption: EncMode; key_epoch: number; plaintext_left: number }> {
     const meta = this.encMeta();
     const left = meta.mode === "private" ? this.ctx.storage.sql.exec<{ n: number }>(`SELECT COUNT(*) AS n FROM events WHERE enc = 0`).one().n : 0;
     return { encryption: meta.mode, key_epoch: meta.epoch, plaintext_left: left };
+  }
+
+  // Sealed clicks. Members' local proxies encrypt end to end; the hub stores public keys, blinded
+  // mailbox ids, delivery-token hashes (and the tokens, for members only), and opaque envelopes.
+
+  private requireSealed(): void {
+    if (this.encMeta().mode !== "sealed") throw new ClickError("This click is not sealed.");
+  }
+
+  private requireLiveMember(principalId: string): void {
+    const row = this.ctx.storage.sql
+      .exec<{ removed_at: number | null }>(`SELECT removed_at FROM principals WHERE id = ?`, principalId)
+      .toArray()[0];
+    if (!row || row.removed_at != null) throw new ClickError("This connection is not a member of that click.");
+  }
+
+  /** Publish (or replace) this member's sealed key, mailbox, and delivery token. */
+  async sealedPublish(props: ClickProps, input: { mailbox: string; public_key: string; delivery_token: string; group: string }): Promise<{ mailbox: string; group: string }> {
+    this.requireSealed();
+    this.requireAgent(props.principalId);
+    this.requireLiveMember(props.principalId);
+    if (!MAILBOX.test(input.mailbox) || !MAILBOX.test(input.group)) throw new ClickError("mailbox and group must be 32 hex characters.");
+    if (!B64U_32.test(input.public_key) || !B64U_32.test(input.delivery_token)) throw new ClickError("public_key and delivery_token must be 32 bytes, base64url.");
+    const current = this.ctx.storage.sql.exec<{ sealed_group: string | null }>(`SELECT sealed_group FROM click_meta WHERE id = 1`).one().sealed_group;
+    if (!current) {
+      // The first key in a sealed click fixes the group, and only an admin can do that.
+      if (props.role !== "admin" && props.role !== "operator") throw new ClickError("An admin's proxy has to set up this sealed click first.");
+      this.ctx.storage.sql.exec(`UPDATE click_meta SET sealed_group = ? WHERE id = 1`, input.group);
+    } else if (current !== input.group) {
+      throw new ClickError("That group secret does not match this sealed click. Join with a sealed invite line from a member's proxy.");
+    }
+    const taken = this.ctx.storage.sql.exec<{ principal_id: string }>(`SELECT principal_id FROM sealed_keys WHERE mailbox = ?`, input.mailbox).toArray()[0];
+    if (taken && taken.principal_id !== props.principalId) throw new ClickError("That mailbox belongs to another member.");
+    const old = this.ctx.storage.sql.exec<{ mailbox: string }>(`SELECT mailbox FROM sealed_keys WHERE principal_id = ?`, props.principalId).toArray()[0]?.mailbox;
+    const deliveryHash = await sha256Hex(input.delivery_token);
+    this.ctx.storage.transactionSync(() => {
+      if (old && old !== input.mailbox) {
+        this.ctx.storage.sql.exec(`DELETE FROM sealed_mail WHERE mailbox = ?`, old);
+        this.ctx.storage.sql.exec(`DELETE FROM sealed_subs WHERE mailbox = ?`, old);
+      }
+      this.ctx.storage.sql.exec(
+        `INSERT INTO sealed_keys (principal_id, mailbox, public_key, delivery_hash, delivery_token, updated_at) VALUES (?, ?, ?, ?, ?, ?)
+         ON CONFLICT (principal_id) DO UPDATE SET mailbox = excluded.mailbox, public_key = excluded.public_key,
+           delivery_hash = excluded.delivery_hash, delivery_token = excluded.delivery_token, updated_at = excluded.updated_at`,
+        props.principalId, input.mailbox, input.public_key, deliveryHash, input.delivery_token, Date.now(),
+      );
+    });
+    return { mailbox: input.mailbox, group: input.group };
+  }
+
+  /** Every member's published key (members only). Handles are not stored with them. */
+  async sealedDirectory(props: ClickProps): Promise<{ group: string | null; me: string | null; keys: SealedEntry[] }> {
+    this.requireSealed();
+    this.requireLiveMember(props.principalId);
+    const group = this.ctx.storage.sql.exec<{ sealed_group: string | null }>(`SELECT sealed_group FROM click_meta WHERE id = 1`).one().sealed_group;
+    const keys = this.ctx.storage.sql
+      .exec<SealedEntry & { principal_id: string }>(`SELECT principal_id, mailbox, public_key, delivery_token, updated_at FROM sealed_keys ORDER BY updated_at`)
+      .toArray();
+    return {
+      group,
+      me: keys.find((row) => row.principal_id === props.principalId)?.mailbox ?? null,
+      keys: keys.map(({ principal_id: _p, ...rest }) => rest),
+    };
+  }
+
+  /** Drop an envelope in a mailbox. No sender identity: the delivery token is the only check. */
+  async sealedDeliver(input: { mailbox: string; token: string; envelope: string }): Promise<{ id: string; received_at: number }> {
+    this.requireSealed();
+    if (!MAILBOX.test(input.mailbox) || !B64U_32.test(input.token)) throw new ClickError("Unknown mailbox or delivery token.");
+    const row = this.ctx.storage.sql.exec<{ delivery_hash: string | null }>(`SELECT delivery_hash FROM sealed_keys WHERE mailbox = ?`, input.mailbox).toArray()[0];
+    if (!row?.delivery_hash || row.delivery_hash !== await sha256Hex(input.token)) throw new ClickError("Unknown mailbox or delivery token.");
+    const envelope = String(input.envelope ?? "");
+    if (!/^[A-Za-z0-9_-]+$/.test(envelope) || !SEALED_SIZES.has(Math.floor((envelope.length * 3) / 4))) {
+      throw new ClickError("Envelope must be a padded sealed envelope (base64url).");
+    }
+    const now = Date.now();
+    const minute = Math.floor(now / 60_000);
+    const used = this.ctx.storage.sql.exec<{ n: number }>(`SELECT COALESCE(SUM(n), 0) AS n FROM sealed_rate WHERE mailbox = ? AND minute = ?`, input.mailbox, minute).one().n;
+    if (used >= SEALED_PER_MINUTE) throw new ClickError("Too many messages to that mailbox in the last minute. Wait and try again.");
+    const queued = this.ctx.storage.sql.exec<{ n: number }>(`SELECT COUNT(*) AS n FROM sealed_mail WHERE mailbox = ?`, input.mailbox).one().n;
+    if (queued >= SEALED_INBOX_MAX) throw new ClickError("That mailbox is full. Its owner has to read and ack messages first.");
+    const id = crypto.randomUUID();
+    this.ctx.storage.transactionSync(() => {
+      this.ctx.storage.sql.exec(`INSERT INTO sealed_mail (id, mailbox, envelope, created_at) VALUES (?, ?, ?, ?)`, id, input.mailbox, envelope, now);
+      this.ctx.storage.sql.exec(
+        `INSERT INTO sealed_rate (mailbox, minute, n) VALUES (?, ?, 1) ON CONFLICT (mailbox, minute) DO UPDATE SET n = n + 1`,
+        input.mailbox, minute,
+      );
+      this.ctx.storage.sql.exec(`DELETE FROM sealed_rate WHERE minute < ?`, minute - 1);
+    });
+    return { id, received_at: now };
+  }
+
+  private ownMailbox(principalId: string): string {
+    const box = this.ctx.storage.sql.exec<{ mailbox: string }>(`SELECT mailbox FROM sealed_keys WHERE principal_id = ?`, principalId).toArray()[0]?.mailbox;
+    if (!box) throw new ClickError("Publish your sealed key first (the Click proxy does this).");
+    return box;
+  }
+
+  async sealedInbox(props: ClickProps, limit = 50): Promise<{ messages: Array<{ id: string; envelope: string; received_at: number }> }> {
+    this.requireSealed();
+    this.requireLiveMember(props.principalId);
+    const box = this.ownMailbox(props.principalId);
+    const rows = this.ctx.storage.sql
+      .exec<{ id: string; envelope: string; created_at: number }>(
+        `SELECT id, envelope, created_at FROM sealed_mail WHERE mailbox = ? ORDER BY created_at, id LIMIT ?`,
+        box, Math.min(Math.max(1, Math.floor(limit) || 50), 100),
+      )
+      .toArray();
+    return { messages: rows.map((row) => ({ id: row.id, envelope: row.envelope, received_at: row.created_at })) };
+  }
+
+  /** Read means gone: acked envelopes are deleted. */
+  async sealedAck(props: ClickProps, ids: string[]): Promise<{ acked: number }> {
+    this.requireSealed();
+    const box = this.ownMailbox(props.principalId);
+    let acked = 0;
+    for (const id of ids.slice(0, 100)) {
+      if (!UUID.test(String(id))) continue;
+      acked += this.ctx.storage.sql.exec(`DELETE FROM sealed_mail WHERE id = ? AND mailbox = ?`, id, box).rowsWritten > 0 ? 1 : 0;
+    }
+    return { acked };
+  }
+
+  async sealedSubscribe(props: ClickProps, topic: string, on: boolean): Promise<{ topic: string; subscribed: boolean }> {
+    this.requireSealed();
+    if (!MAILBOX.test(topic)) throw new ClickError("topic must be a blinded topic id (32 hex characters).");
+    const box = this.ownMailbox(props.principalId);
+    if (on) this.ctx.storage.sql.exec(`INSERT INTO sealed_subs (topic, mailbox) VALUES (?, ?) ON CONFLICT DO NOTHING`, topic, box);
+    else this.ctx.storage.sql.exec(`DELETE FROM sealed_subs WHERE topic = ? AND mailbox = ?`, topic, box);
+    return { topic, subscribed: on };
+  }
+
+  async sealedTopic(props: ClickProps, topic: string): Promise<{ topic: string; mailboxes: string[] }> {
+    this.requireSealed();
+    this.requireLiveMember(props.principalId);
+    if (!MAILBOX.test(topic)) throw new ClickError("topic must be a blinded topic id (32 hex characters).");
+    const rows = this.ctx.storage.sql.exec<{ mailbox: string }>(`SELECT mailbox FROM sealed_subs WHERE topic = ?`, topic).toArray();
+    return { topic, mailboxes: rows.map((row) => row.mailbox) };
   }
 
   private agentByHandle(handle: string): AgentRow | undefined {

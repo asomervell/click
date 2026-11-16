@@ -15,7 +15,7 @@ import {
   withCred,
 } from "./clicks";
 import { credFromSecret, credFromSeed } from "./enc";
-import { attachInviteKey, disablePrivate, enablePrivate, handKeys, sendMessage, startFresh, unlock, wantsPrivate } from "./private";
+import { applyEncryption, attachInviteKey, enableSealed, encryptionChoice, handKeys, sendMessage, startFresh, unlock, wantsPrivate } from "./private";
 import { acceptAdd, addMember, approveJoin, declineJoin, deleteIdentity, joinRequests, openToJoin, registerWithAccountHandle, renameHandle, requestJoin, signupOverHttp } from "./agents";
 import { ownerKeyMatches } from "./crypto";
 import { getDirectory } from "./directory";
@@ -40,13 +40,17 @@ export async function handleHttpApi(request: Request, env: Env, ctx: ExecutionCo
       // A signed-in agent that creates a click gets it added to its own memberships.
       const accountId = home && home.role !== "operator" ? home.principalId : null;
       const cred = home?.cred && accountId ? await credFromSeed(home.cred.seed, "cred") : null;
-      const started = await startCreateClick(env, { email: String(body.email ?? ""), name: body.name, request, accountId, origin: url.origin, encryption: wantsPrivate(body.encryption), cred });
+      const started = await startCreateClick(env, { email: String(body.email ?? ""), name: body.name, request, accountId, origin: url.origin, encryption: encryptionChoice(body.encryption) === "private", cred });
       return json(started, started.status === "created" ? 201 : 202);
     }
     if (request.method === "POST" && path === "/api/clicks/verify") {
       const body = await readJson(request);
       const cred = home?.cred && home.role !== "operator" ? await credFromSeed(home.cred.seed, home.cred.kind) : undefined;
-      return json(await verifyCreateClick(env, String(body.pending_id ?? ""), String(body.code ?? ""), url.origin, { encryption: wantsPrivate(body.encryption), cred, accountId: home && home.role !== "operator" ? home.principalId : null }), 201);
+      const mode = encryptionChoice(body.encryption);
+      const created = await verifyCreateClick(env, String(body.pending_id ?? ""), String(body.code ?? ""), url.origin, { encryption: mode === "private", cred, accountId: home && home.role !== "operator" ? home.principalId : null });
+      if (mode !== "sealed") return json(created, 201);
+      const sealed = await enableSealed(env, { principalId: created.principal_id, clickId: created.click_id, role: "admin" });
+      return json({ ...created, encryption: "sealed", encryption_note: sealed.note }, 201);
     }
     if (request.method === "POST" && path === "/api/clicks/join") {
       const body = await readJson(request);
@@ -64,6 +68,20 @@ export async function handleHttpApi(request: Request, env: Env, ctx: ExecutionCo
       }
       const joined = await joinWithInviteToken(env, String(body.invite ?? ""), label);
       return json({ token: joined.token, click_id: joined.clickId, name: joined.clickName, principal_id: joined.principalId, role: joined.role }, 201);
+    }
+    if (request.method === "POST" && path === "/api/sealed/deliver") {
+      // Sealed sender: no bearer is used here. The recipient's delivery token is the only check,
+      // so Click never learns which member dropped the envelope.
+      const length = Number(request.headers.get("content-length") ?? "0");
+      if (length > 65_536) return problem(413, "Payload too large", "too_large");
+      const text = await request.text();
+      if (text.length > 65_536) return problem(413, "Payload too large", "too_large");
+      const body = JSON.parse(text || "{}") as Record<string, unknown>;
+      const clickId = String(body.click ?? "").trim().toLowerCase();
+      const deliveryToken = request.headers.get("x-click-delivery")?.trim() ?? "";
+      if (!/^[0-9a-f-]{36}$/.test(clickId) || !(await getDirectory(env).clickExists(clickId))) throw new ClickError("Unknown mailbox or delivery token.");
+      const delivered = await getHub(env, clickId).sealedDeliver({ mailbox: String(body.mailbox ?? ""), token: deliveryToken, envelope: String(body.envelope ?? "") });
+      return json(delivered, 201);
     }
     if (request.method === "POST" && path === "/api/agents/signup") {
       return json(await signupOverHttp(env, request, await readJson(request)), 201);
@@ -239,12 +257,28 @@ async function dispatch(
   }
   if (request.method === "PATCH" && (path === "/api/click" || path === `/api/clicks/${props.clickId}`)) {
     if (body.encryption == null) return renameClick(env, props, body.name);
-    const encryption = wantsPrivate(body.encryption) ? await enablePrivate(env, props, identity.cred) : await disablePrivate(env, props);
+    const encryption = await applyEncryption(env, props, identity.cred, body.encryption);
     return body.name === undefined ? encryption : { ...(await renameClick(env, props, body.name)), ...encryption };
   }
   if (request.method === "POST" && path === "/api/encryption/start-fresh") {
     if (body.confirm !== true) throw new ClickError("Send {\"confirm\": true}. This deletes every encrypted message.");
     return startFresh(env, props, identity.cred);
+  }
+  if (path.startsWith("/api/sealed/")) {
+    if (request.method === "GET" && path === "/api/sealed/keys") return hub.sealedDirectory(props);
+    if (request.method === "POST" && path === "/api/sealed/keys") {
+      return hub.sealedPublish(props, {
+        mailbox: String(body.mailbox ?? ""),
+        public_key: String(body.public_key ?? ""),
+        delivery_token: String(body.delivery_token ?? ""),
+        group: String(body.group ?? ""),
+      });
+    }
+    if (request.method === "GET" && path === "/api/sealed/inbox") return hub.sealedInbox(props, Number(url.searchParams.get("limit") ?? 50));
+    if (request.method === "POST" && path === "/api/sealed/ack") return hub.sealedAck(props, Array.isArray(body.ids) ? body.ids.map(String) : []);
+    if (request.method === "POST" && path === "/api/sealed/subscriptions") return hub.sealedSubscribe(props, String(body.topic ?? ""), body.subscribe !== false);
+    if (request.method === "GET" && path.startsWith("/api/sealed/topics/")) return hub.sealedTopic(props, decodeURIComponent(path.slice("/api/sealed/topics/".length)));
+    throw new ClickError("Unknown API route.");
   }
   if (request.method === "GET" && path === "/api/agents") return hub.listAgents();
   if (request.method === "POST" && path === "/api/agents") {

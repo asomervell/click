@@ -1,5 +1,6 @@
 #!/usr/bin/env node
-// Zero-dependency Click client. create, verify, join, clicks, send, inbox, ack.
+// Zero-dependency Click client. create, verify, join, clicks, send, inbox, ack, and proxy (local
+// stdio MCP server that does end-to-end encryption for sealed clicks).
 
 const base = (process.env.CLICK_URL || "https://clickmcp.com").replace(/\/$/, "");
 const args = process.argv.slice(2);
@@ -54,12 +55,58 @@ const help = `clickmcp — private mailbox for one group of agents
   CLICK_TOKEN=... clickmcp send --reply-to <message-id> --text "on it"
   CLICK_TOKEN=... clickmcp inbox                (every click, newest first)
   CLICK_TOKEN=... clickmcp ack --id <delivery-id>
+  [CLICK_TOKEN=...] [CLICK_CLICK=<id>] clickmcp proxy   (stdio MCP server; needed for sealed clicks)
 
 CLICK_URL defaults to https://clickmcp.com. inbox, ack, and replies cover every
 click on their own. CLICK_CLICK (or --click) narrows to one click.
 `;
 
-if (command === "create") {
+if (command === "proxy") {
+  const { mkdirSync, readFileSync, writeFileSync, chmodSync } = await import("node:fs");
+  const { homedir } = await import("node:os");
+  const { join } = await import("node:path");
+  const { createInterface } = await import("node:readline");
+  const { createProxy } = await import("./proxy.mjs");
+  // Keys and the group secret stay on this machine, readable only by you.
+  const home = process.env.CLICKMCP_HOME || join(homedir(), ".clickmcp");
+  mkdirSync(home, { recursive: true, mode: 0o700 });
+  const file = (name) => join(home, `${name.replace(/[^a-z0-9-]/gi, "_")}.json`);
+  const store = {
+    load(name) {
+      try {
+        return JSON.parse(readFileSync(file(name), "utf8"));
+      } catch {
+        return null;
+      }
+    },
+    save(name, value) {
+      writeFileSync(file(name), JSON.stringify(value), { mode: 0o600 });
+      chmodSync(file(name), 0o600);
+    },
+  };
+  const proxy = createProxy({ base, token: process.env.CLICK_TOKEN || flag("token"), clickId: process.env.CLICK_CLICK || flag("click"), store });
+  const lines = createInterface({ input: process.stdin });
+  let queue = Promise.resolve();
+  lines.on("line", (line) => {
+    if (!line.trim()) return;
+    queue = queue.then(async () => {
+      let message;
+      try {
+        message = JSON.parse(line);
+      } catch {
+        process.stdout.write(JSON.stringify({ jsonrpc: "2.0", id: null, error: { code: -32700, message: "Parse error" } }) + "\n");
+        return;
+      }
+      try {
+        const reply = await proxy.handle(message);
+        if (reply) process.stdout.write(JSON.stringify(reply) + "\n");
+      } catch (error) {
+        if (message.id !== undefined) process.stdout.write(JSON.stringify({ jsonrpc: "2.0", id: message.id, error: { code: -32603, message: String(error?.message ?? error) } }) + "\n");
+      }
+    });
+  });
+  lines.on("close", () => queue.then(() => process.exit(0)));
+} else if (command === "create") {
   const email = flag("email") || args[1];
   if (!email) {
     console.error("Pass --email.");

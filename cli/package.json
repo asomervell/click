@@ -9,6 +9,8 @@
   },
   "files": [
     "clickmcp.mjs",
+    "proxy.mjs",
+    "sealed.mjs",
     "README.md",
     "LICENSE"
   ],

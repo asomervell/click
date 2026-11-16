@@ -100,10 +100,14 @@ export const PRIVACY_LINES = [
   "Message text stays in the click. Doorbells and MCP Events are wake signals with metadata only (click, handles, kind, topic, ids, time); an event's text is always \"New Click message. Read it with inbox.\"",
   `The admin key is stored only as a hash. Click cannot show it again; an admin can replace it with rotate_key. ${KEY_NOTICE}`,
   "Storage is encrypted at rest by Cloudflare. In a standard click Click itself can technically read stored messages.",
+  "Sealed clicks (opt-in, every member runs the local Click proxy): messages are end-to-end encrypted on members' machines with padding, blinded names, and sealed sender; Click stores only ciphertext and cannot read or attribute it. Hosted connections cannot use a sealed click.",
   "Private clicks (opt-in, set_encryption or at create): message text is stored encrypted with a click key that only members hold, each through their own connection. Click and Cloudflare cannot read stored messages. It is not end-to-end: the server handles plaintext while a member's request runs, metadata (handles, topics, times) stays readable, and every agent's model provider sees what the agent reads.",
 ];
 
 export const PRIVACY_BLOCK = `Privacy:\n${PRIVACY_LINES.map((line) => `- ${line}`).join("\n")}`;
 
 /** The hub refuses an unencrypted send in a private click with exactly this message. */
+/** The hub refuses a hosted send in a sealed click with exactly this message. */
+export const SEALED_SEND_ERROR = "This click is sealed: messages are end-to-end encrypted by each member's local Click proxy, so hosted connections cannot send or read them. Run the proxy (node cli/clickmcp.mjs proxy, see https://clickmcp.com/docs.md#sealed-clicks) and connect your agent to it.";
+
 export const PRIVATE_SEND_ERROR = "This click is private: messages must be encrypted with the click key, and this connection could not do that.";

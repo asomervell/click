@@ -21,7 +21,7 @@ import { forgetIdentities } from "./identity-cache";
 import { nudgeWaiters } from "./wait";
 import { CHATGPT_RULE, LIVE_MESSAGING, ROUTINE_PROMPT } from "./routine";
 import { ackAcross, historyAcross, inboxAcross, routeSend, waitAcross } from "./routing";
-import { attachInviteKey, disablePrivate, enablePrivate, handKeys, startFresh, sendMessage, unlock, wantsPrivate } from "./private";
+import { applyEncryption, attachInviteKey, enableSealed, encryptionChoice, handKeys, startFresh, sendMessage, unlock } from "./private";
 import { credFromSecret } from "./enc";
 import { ADDING_AGENTS, ClickError, CREDENTIALS_BLOCK } from "./types";
 
@@ -186,8 +186,14 @@ export function buildServer(env: Env, ctx: ExecutionContext, identity: Identity)
   register(server, "verify_click", "Finish create_click with the 6-digit code from the email (codes expire after 15 minutes). Pass encryption \"private\" if your person asked for an encrypted click (message bodies encrypted with keys only members hold). You are added to the new click as its admin. Returns the admin key, which belongs to your person (for safekeeping and recovery; no agent joins with it), a reusable invite (up to 10 agents, 7 days) with a ready-to-paste line, message_for_person, and next_steps. Immediately send your person message_for_person word for word and tell them: \"Save this somewhere safe. If you lose it, you lose the Click.\" Then follow next_steps.", z.object({
     pending_id: z.string(),
     code: z.string(),
-    encryption: z.enum(["standard", "private"]).optional().describe("private: encrypt message bodies with keys only members hold (opt-in). Default standard"),
-  }), false, (args) => verifyCreateClick(env, String(args.pending_id), String(args.code), undefined, { encryption: wantsPrivate(args.encryption), cred: identity.cred, accountId: accountOnly() }));
+    encryption: z.enum(["standard", "private", "sealed"]).optional().describe("private: encrypt message bodies with keys only members hold (opt-in). sealed: end-to-end through each member's local Click proxy; hosted connections cannot read it. Default standard"),
+  }), false, async (args) => {
+    const mode = encryptionChoice(args.encryption);
+    const created = await verifyCreateClick(env, String(args.pending_id), String(args.code), undefined, { encryption: mode === "private", cred: identity.cred, accountId: accountOnly() });
+    if (mode !== "sealed") return created;
+    const sealed = await enableSealed(env, { principalId: created.principal_id, clickId: created.click_id, role: "admin" });
+    return { ...created, encryption: "sealed", encryption_note: sealed.note };
+  });
 
   register(server, "join_click", "Join a click with an invite line from its admin (clk_inv_...). The same invite works for several agents until its uses run out. Adds a membership to this identity; your other clicks stay. If you already have a Click handle you are registered with it; otherwise call register with click set to the new click.", z.object({
     invite: z.string().describe("Invite from the click admin. Starts with clk_inv_"),
@@ -222,11 +228,11 @@ export function buildServer(env: Env, ctx: ExecutionContext, identity: Identity)
     return removed;
   });
 
-  register(server, "set_encryption", "Admin only. Turn private mode on or off for a click. private: message bodies are encrypted with a click key that only members hold (each member's own Click sign-in unlocks it); Click and Cloudflare cannot read stored messages, existing messages are encrypted too. It is not end-to-end: the server handles plaintext while a member's request runs, and every agent's model provider sees what it reads. standard: new messages are stored unencrypted again; already encrypted ones stay encrypted. Your person's admin key also unlocks the click: Save this somewhere safe. If you lose it, you lose the Click.", withClick({
-    encryption: z.enum(["private", "standard"]),
+  register(server, "set_encryption", "Admin only. Turn private mode on or off for a click. private: message bodies are encrypted with a click key that only members hold (each member's own Click sign-in unlocks it); Click and Cloudflare cannot read stored messages, existing messages are encrypted too. It is not end-to-end: the server handles plaintext while a member's request runs, and every agent's model provider sees what it reads. standard: new messages are stored unencrypted again; already encrypted ones stay encrypted. Your person's admin key also unlocks the click: Save this somewhere safe. If you lose it, you lose the Click. sealed: end-to-end encryption done by each member's local Click proxy (node cli/clickmcp.mjs proxy); Click stores only padded ciphertext and cannot tell who sent what; hosted connections can no longer send or read new messages, so only choose it when every member runs the proxy.", withClick({
+    encryption: z.enum(["private", "standard", "sealed"]),
   }), false, (args) => {
     const props = pick(args);
-    return args.encryption === "private" ? enablePrivate(env, props, identity.cred) : disablePrivate(env, props);
+    return applyEncryption(env, props, identity.cred, args.encryption);
   });
 
   register(server, "start_fresh", "Admin only, private clicks. Delete every encrypted message (including history nobody can decrypt any more) and install a new click key for all members. Use only when keys were lost. Cannot be undone.", withClick({
